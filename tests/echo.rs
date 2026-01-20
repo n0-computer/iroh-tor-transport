@@ -1,15 +1,15 @@
 //! Integration test: Tor hidden service echo test using a native Tor key.
 //!
 //! This test requires a running Tor daemon with the control port enabled.
-//! Run `tor` with ControlPort 9051 enabled in your torrc.
+//! Run: `tor --ControlPort 9051 --CookieAuthentication 0`
 
 use std::{net::SocketAddr, str::FromStr, sync::Once, time::Duration};
 
 use anyhow::{Context, Result};
 use iroh::SecretKey;
 use iroh_tor::{
-    generate_tor_key, iroh_to_tor_secret_key, TorControl, DEFAULT_CONTROL_PORT,
-    DEFAULT_SOCKS_PORT,
+    generate_tor_key, iroh_to_tor_secret_key, TorControl, TorSecretKeyV3,
+    DEFAULT_CONTROL_PORT, DEFAULT_SOCKS_PORT,
 };
 use tracing::{error, info, warn};
 use tokio::{
@@ -120,21 +120,10 @@ async fn wait_for_hidden_service(
     let deadline = Instant::now() + timeout;
     loop {
         let raw = tor_control.list_hidden_services_raw().await?;
-        let raw_detached = tor_control.list_hidden_services_detached_raw().await?;
         info!("Services raw: {:?}", raw);
-        info!("Services detached raw: {:?}", raw_detached);
         let services = parse_onion_list(&raw)?;
-        let detached = parse_onion_list(&raw_detached)?;
         info!("Services: {:?}", services);
-        info!("Services detached: {:?}", detached);
         if services.iter().any(|service| service == addr) {
-            return Ok(());
-        }
-        if detached.iter().any(|service| service == addr) {
-            warn!(
-                "Hidden service appeared in detached list: {}.onion",
-                addr.get_address_without_dot_onion()
-            );
             return Ok(());
         }
         if Instant::now() >= deadline {
@@ -149,15 +138,11 @@ async fn wait_for_hidden_service(
     }
 }
 
-/// Simple test using torut's native key generation to verify the mechanism works.
-#[tokio::test]
-async fn test_native_tor_key() -> Result<()> {
+async fn run_hidden_service_echo(tor_key: &TorSecretKeyV3, label: &str) -> Result<()> {
     init_tracing();
 
-    // Use torut's native key generation
-    let tor_key = generate_tor_key();
     let onion_addr = tor_key.public().get_onion_address();
-    info!("Generated onion: {}", onion_addr);
+    info!("Generated onion ({}): {}", label, onion_addr);
 
     // Bind local TCP listener
     let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -170,7 +155,7 @@ async fn test_native_tor_key() -> Result<()> {
     info!("Existing services before create: {:?}", existing_services);
 
     let (created_addr, existed) = tor_control
-        .create_hidden_service_with_tor_key(&tor_key, HIDDEN_SERVICE_PORT, local_addr)
+        .create_hidden_service_with_tor_key(tor_key, HIDDEN_SERVICE_PORT, local_addr)
         .await?;
 
     info!(
@@ -217,7 +202,7 @@ async fn test_native_tor_key() -> Result<()> {
         .context("Read timed out")??;
 
     assert_eq!(&response, TEST_MESSAGE);
-    info!("Echo test with native tor key PASSED!");
+    info!("Echo test with {} PASSED!", label);
 
     // List services before dropping the control connection.
     let services = tor_control.list_hidden_services().await?;
@@ -231,84 +216,17 @@ async fn test_native_tor_key() -> Result<()> {
     Ok(())
 }
 
+/// Simple test using torut's native key generation to verify the mechanism works.
+#[tokio::test]
+async fn test_native_tor_key() -> Result<()> {
+    let tor_key = generate_tor_key();
+    run_hidden_service_echo(&tor_key, "native tor key").await
+}
+
 /// Test using an iroh key converted to a Tor keypair.
 #[tokio::test]
 async fn test_iroh_key_converted_to_tor() -> Result<()> {
-    init_tracing();
-
     let iroh_key = SecretKey::generate(&mut rand::rng());
     let tor_key = iroh_to_tor_secret_key(&iroh_key);
-    let onion_addr = tor_key.public().get_onion_address();
-    info!("Generated onion from iroh key: {}", onion_addr);
-
-    // Bind local TCP listener
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let local_addr: SocketAddr = listener.local_addr()?;
-    info!("Listening on: {}", local_addr);
-
-    // Connect to Tor and list existing services before creating a new one
-    let mut tor_control = connect_tor_control().await?;
-    let existing_services = tor_control.list_hidden_services().await?;
-    info!("Existing services before create: {:?}", existing_services);
-
-    let (created_addr, existed) = tor_control
-        .create_hidden_service_with_tor_key(&tor_key, HIDDEN_SERVICE_PORT, local_addr)
-        .await?;
-
-    info!(
-        "Hidden service {}: {}.onion:{}",
-        if existed { "reused" } else { "created" },
-        created_addr.get_address_without_dot_onion(),
-        HIDDEN_SERVICE_PORT
-    );
-
-    // Wait adaptively: poll Tor for the new service to appear on this connection.
-    info!("Waiting for hidden service to appear in control connection list...");
-    wait_for_hidden_service(&mut tor_control, &created_addr, Duration::from_secs(60)).await?;
-
-    // Spawn echo server
-    let server_handle = tokio::spawn(async move {
-        if let Err(e) = run_echo_server(listener).await {
-            error!("Echo server error: {}", e);
-        }
-    });
-
-    // Try to connect
-    let onion_addr_str = format!("{}.onion", created_addr.get_address_without_dot_onion());
-    info!(
-        "Connecting to {}:{}...",
-        onion_addr_str, HIDDEN_SERVICE_PORT
-    );
-
-    let mut stream = connect_via_tor(
-        &onion_addr_str,
-        HIDDEN_SERVICE_PORT,
-        Duration::from_secs(240),
-    )
-    .await
-    .context("Failed to connect")?;
-
-    info!("Connected! Sending message...");
-    timeout(Duration::from_secs(10), stream.write_all(TEST_MESSAGE))
-        .await
-        .context("Write timed out")??;
-
-    let mut response = vec![0u8; TEST_MESSAGE.len()];
-    timeout(Duration::from_secs(30), stream.read_exact(&mut response))
-        .await
-        .context("Read timed out")??;
-
-    assert_eq!(&response, TEST_MESSAGE);
-    info!("Echo test with iroh->tor key PASSED!");
-
-    // List services before dropping the control connection.
-    let services = tor_control.list_hidden_services().await?;
-    info!("Active services on this control connection:");
-    for service in services {
-        info!("  {}.onion", service.get_address_without_dot_onion());
-    }
-
-    drop(stream);
-    server_handle.abort();
-    Ok(())
+    run_hidden_service_echo(&tor_key, "iroh->tor key").await
 }

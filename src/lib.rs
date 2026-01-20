@@ -233,28 +233,6 @@ impl TorControl {
             .await
             .context("Failed to query onions/current")
     }
-
-    /// List hidden services that are detached from the current control connection.
-    pub async fn list_hidden_services_detached(&mut self) -> Result<Vec<OnionAddressV3>> {
-        let response = self.list_hidden_services_detached_raw().await?;
-
-        let mut services = Vec::new();
-        for line in response.lines().map(str::trim).filter(|l| !l.is_empty()) {
-            let addr = OnionAddressV3::from_str(line)
-                .with_context(|| format!("Invalid onion address from Tor: {}", line))?;
-            services.push(addr);
-        }
-
-        Ok(services)
-    }
-
-    /// Return the raw `GETINFO onions/detached` response.
-    pub async fn list_hidden_services_detached_raw(&mut self) -> Result<String> {
-        self.conn
-            .get_info_unquote("onions/detached")
-            .await
-            .context("Failed to query onions/detached")
-    }
 }
 
 #[cfg(test)]
