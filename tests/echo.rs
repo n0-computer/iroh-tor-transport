@@ -3,7 +3,7 @@
 //! This test requires a running Tor daemon with the control port enabled.
 //! Run: `tor --ControlPort 9051 --CookieAuthentication 0`
 
-use std::{net::SocketAddr, str::FromStr, sync::Once, time::Duration};
+use std::{io, net::SocketAddr, sync::Once, time::Duration};
 
 use anyhow::{Context, Result};
 use iroh::SecretKey;
@@ -18,7 +18,6 @@ use tokio::{
     time::{Instant, timeout},
 };
 use tokio_socks::tcp::Socks5Stream;
-use torut::onion::OnionAddressV3;
 
 const TEST_MESSAGE: &[u8] = b"Hello from Tor hidden service!";
 const HIDDEN_SERVICE_PORT: u16 = 9999;
@@ -59,18 +58,30 @@ async fn connect_via_tor(onion_addr: &str, port: u16, timeout: Duration) -> Resu
             attempt,
             remaining.as_secs()
         );
-        match Socks5Stream::connect(socks_addr, target).await {
-            Ok(stream) => return Ok(stream.into_inner()),
-            Err(e) => {
+        match tokio::time::timeout(
+            Duration::from_secs(30),
+            Socks5Stream::connect(socks_addr, target),
+        )
+        .await
+        {
+            Ok(Ok(stream)) => return Ok(stream.into_inner()),
+            Ok(Err(e)) => {
                 warn!("  Attempt {} failed: {}", attempt, e);
                 last_error = Some(e);
-                // Wait before retrying - the service might still be propagating
-                let backoff = 3u64.saturating_mul(2u64.saturating_pow((attempt - 1) as u32));
-                let sleep_for = Duration::from_secs(backoff.min(15));
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining > Duration::from_secs(1) {
-                    tokio::time::sleep(sleep_for.min(remaining)).await;
-                }
+            }
+            Err(e) => {
+                warn!("  Attempt {} timed out: {}", attempt, e);
+                let timeout_err = io::Error::new(io::ErrorKind::TimedOut, "SOCKS connect timed out");
+                last_error = Some(tokio_socks::Error::from(timeout_err));
+            }
+        }
+        if last_error.is_some() {
+            // Wait before retrying - the service might still be propagating
+            let backoff = 3u64.saturating_mul(2u64.saturating_pow((attempt - 1) as u32));
+            let sleep_for = Duration::from_secs(backoff.min(15));
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining > Duration::from_secs(1) {
+                tokio::time::sleep(sleep_for.min(remaining)).await;
             }
         }
     }
@@ -100,42 +111,22 @@ async fn run_echo_server(listener: TcpListener) -> Result<()> {
     Ok(())
 }
 
-fn parse_onion_list(raw: &str) -> Result<Vec<OnionAddressV3>> {
-    let mut services = Vec::new();
-    for line in raw.lines().map(str::trim).filter(|l| !l.is_empty()) {
-        let addr = OnionAddressV3::from_str(line)
-            .with_context(|| format!("Invalid onion address from Tor: {}", line))?;
-        services.push(addr);
-    }
-    Ok(services)
-}
+async fn run_echo_server_n(listener: TcpListener, max_connections: usize) -> Result<()> {
+    for _ in 0..max_connections {
+        let (mut socket, _addr) = listener.accept().await?;
+        let mut buf = vec![0u8; 1024];
 
-/// Wait until the hidden service shows up in Tor's list for this control connection.
-/// If it does not appear before timeout, log a warning and continue.
-async fn wait_for_hidden_service(
-    tor_control: &mut TorControl,
-    addr: &OnionAddressV3,
-    timeout: Duration,
-) -> Result<()> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        let raw = tor_control.list_hidden_services_raw().await?;
-        info!("Services raw: {:?}", raw);
-        let services = parse_onion_list(&raw)?;
-        info!("Services: {:?}", services);
-        if services.iter().any(|service| service == addr) {
-            return Ok(());
+        loop {
+            let n = socket.read(&mut buf).await?;
+            info!("Received {} bytes", n);
+            if n == 0 {
+                break;
+            }
+            socket.write_all(&buf[..n]).await?;
         }
-        if Instant::now() >= deadline {
-            warn!(
-                "Hidden service did not appear in control list within {}s: {}.onion",
-                timeout.as_secs(),
-                addr.get_address_without_dot_onion()
-            );
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_secs(2)).await;
     }
+
+    Ok(())
 }
 
 async fn run_hidden_service_echo(tor_key: &TorSecretKeyV3, label: &str) -> Result<()> {
@@ -167,7 +158,16 @@ async fn run_hidden_service_echo(tor_key: &TorSecretKeyV3, label: &str) -> Resul
 
     // Wait adaptively: poll Tor for the new service to appear on this connection.
     info!("Waiting for hidden service to appear in control connection list...");
-    wait_for_hidden_service(&mut tor_control, &created_addr, Duration::from_secs(60)).await?;
+    let found = tor_control
+        .wait_for_hidden_service(&created_addr, Duration::from_secs(60), Duration::from_secs(2))
+        .await?;
+    if !found {
+        warn!(
+            "Hidden service did not appear in control list within {}s: {}.onion",
+            60,
+            created_addr.get_address_without_dot_onion()
+        );
+    }
 
     // Spawn echo server
     let server_handle = tokio::spawn(async move {
@@ -229,4 +229,94 @@ async fn test_iroh_key_converted_to_tor() -> Result<()> {
     let iroh_key = SecretKey::generate(&mut rand::rng());
     let tor_key = iroh_to_tor_secret_key(&iroh_key);
     run_hidden_service_echo(&tor_key, "iroh->tor key").await
+}
+
+#[tokio::test]
+async fn test_echo_latency_10x_single_service() -> Result<()> {
+    init_tracing();
+
+    let tor_key = generate_tor_key();
+    let onion_addr = tor_key.public().get_onion_address();
+    info!("Generated onion (latency test): {}", onion_addr);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let local_addr: SocketAddr = listener.local_addr()?;
+    info!("Listening on: {}", local_addr);
+
+    let mut tor_control = connect_tor_control().await?;
+    let existing_services = tor_control.list_hidden_services().await?;
+    info!("Existing services before create: {:?}", existing_services);
+
+    let (created_addr, existed) = tor_control
+        .create_hidden_service_with_tor_key(&tor_key, HIDDEN_SERVICE_PORT, local_addr)
+        .await?;
+
+    info!(
+        "Hidden service {}: {}.onion:{}",
+        if existed { "reused" } else { "created" },
+        created_addr.get_address_without_dot_onion(),
+        HIDDEN_SERVICE_PORT
+    );
+
+    info!("Waiting for hidden service to appear in control connection list...");
+    let found = tor_control
+        .wait_for_hidden_service(&created_addr, Duration::from_secs(60), Duration::from_secs(2))
+        .await?;
+    if !found {
+        warn!(
+            "Hidden service did not appear in control list within {}s: {}.onion",
+            60,
+            created_addr.get_address_without_dot_onion()
+        );
+    }
+
+    let server_handle = tokio::spawn(async move {
+        if let Err(e) = run_echo_server_n(listener, 10).await {
+            error!("Echo server error: {}", e);
+        }
+    });
+
+    let onion_addr_str = format!("{}.onion", created_addr.get_address_without_dot_onion());
+    let mut samples = Vec::with_capacity(10);
+    for i in 0..10 {
+        info!("Latency attempt {}/10", i + 1);
+        let mut stream = connect_via_tor(
+            &onion_addr_str,
+            HIDDEN_SERVICE_PORT,
+            Duration::from_secs(240),
+        )
+        .await
+        .context("Failed to connect")?;
+
+        let start = Instant::now();
+        timeout(Duration::from_secs(10), stream.write_all(TEST_MESSAGE))
+            .await
+            .context("Write timed out")??;
+
+        let mut response = vec![0u8; TEST_MESSAGE.len()];
+        timeout(Duration::from_secs(30), stream.read_exact(&mut response))
+            .await
+            .context("Read timed out")??;
+
+        assert_eq!(&response, TEST_MESSAGE);
+        let elapsed = start.elapsed();
+        info!("Echo latency: {} ms", elapsed.as_millis());
+        samples.push(elapsed);
+        drop(stream);
+    }
+
+    if let Some(min) = samples.iter().min() {
+        let max = samples.iter().max().unwrap();
+        let total_ms: u128 = samples.iter().map(|d| d.as_millis()).sum();
+        let avg_ms = total_ms as f64 / samples.len() as f64;
+        info!(
+            "Echo latency stats: min={}ms max={}ms avg={:.2}ms",
+            min.as_millis(),
+            max.as_millis(),
+            avg_ms
+        );
+    }
+
+    server_handle.abort();
+    Ok(())
 }

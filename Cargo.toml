@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 torut = "0.2"
 tokio = { version = "1", features = ["full"] }
-iroh = "0.95"
+iroh = { git = "https://github.com/n0-computer/iroh", branch = "feat-user-transport-2" }
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

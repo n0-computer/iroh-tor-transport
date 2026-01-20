@@ -3,12 +3,12 @@
 //! This crate provides utilities for creating Tor hidden services that can be used
 //! as a custom transport for iroh networking.
 
-use std::{future::Future, pin::Pin, str::FromStr, time::Duration};
+use std::{future::Future, pin::Pin, str::FromStr, time::{Duration, Instant}};
 
 use anyhow::{Context, Result};
 use iroh::SecretKey;
 use sha2::{Digest, Sha512};
-use tokio::net::TcpStream;
+use tokio::{net::TcpStream, time::sleep};
 // Re-export TorSecretKeyV3 for users who want to use native Tor keys
 pub use torut::onion::TorSecretKeyV3;
 use torut::{
@@ -232,6 +232,28 @@ impl TorControl {
             .get_info_unquote("onions/current")
             .await
             .context("Failed to query onions/current")
+    }
+
+    /// Wait until the hidden service shows up in Tor's list for this control connection.
+    ///
+    /// Returns true if the service appears before timeout, false otherwise.
+    pub async fn wait_for_hidden_service(
+        &mut self,
+        addr: &OnionAddressV3,
+        timeout: Duration,
+        poll_interval: Duration,
+    ) -> Result<bool> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let services = self.list_hidden_services().await?;
+            if services.iter().any(|service| service == addr) {
+                return Ok(true);
+            }
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
+            sleep(poll_interval).await;
+        }
     }
 }
 
