@@ -37,7 +37,7 @@ async fn connect_via_tor(onion_addr: &str, port: u16, timeout: Duration) -> Resu
             attempt,
             remaining.as_secs()
         );
-        match Socks5Stream::connect(socks_addr, target.clone()).await {
+        match Socks5Stream::connect(socks_addr, target).await {
             Ok(stream) => return Ok(stream.into_inner()),
             Err(e) => {
                 println!("  Attempt {} failed: {}", attempt, e);

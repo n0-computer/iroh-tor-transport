@@ -37,7 +37,7 @@ pub fn iroh_to_tor_secret_key(key: &SecretKey) -> TorSecretKeyV3 {
     // Use torut's internal ed25519-dalek 1.x to create the expanded key
     // torut re-exports what we need through its generate() path
     // We'll create an ExpandedSecretKey using SHA-512 expansion
-    let hash = Sha512::digest(&seed);
+    let hash = Sha512::digest(seed);
     let expanded_bytes: [u8; 64] = hash.into();
 
     // TorSecretKeyV3::from expects a 64-byte array
