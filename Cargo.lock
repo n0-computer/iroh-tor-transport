@@ -1729,8 +1729,12 @@ name = "iroh-tor"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "ed25519-dalek 2.2.0",
  "iroh",
+ "iroh-base",
+ "iroh-quinn-udp",
+ "n0-watcher",
  "rand 0.9.2",
  "sha2 0.10.9",
  "tokio",
