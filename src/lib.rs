@@ -34,11 +34,14 @@ pub fn iroh_to_tor_secret_key(key: &SecretKey) -> TorSecretKeyV3 {
     // Get the 32-byte seed from iroh's SecretKey
     let seed = key.to_bytes();
 
-    // Use torut's internal ed25519-dalek 1.x to create the expanded key
-    // torut re-exports what we need through its generate() path
-    // We'll create an ExpandedSecretKey using SHA-512 expansion
+    // Use SHA-512 expansion and Ed25519 clamping for the scalar.
+    // Tor expects an expanded secret key (scalar + nonce) in ed25519-dalek 1.x format.
     let hash = Sha512::digest(seed);
-    let expanded_bytes: [u8; 64] = hash.into();
+    let mut expanded_bytes: [u8; 64] = hash.into();
+    // Clamp per RFC 8032.
+    expanded_bytes[0] &= 248;
+    expanded_bytes[31] &= 63;
+    expanded_bytes[31] |= 64;
 
     // TorSecretKeyV3::from expects a 64-byte array
     TorSecretKeyV3::from(expanded_bytes)
@@ -211,11 +214,7 @@ impl TorControl {
     /// This uses the Tor control command `GETINFO onions/current`, which only
     /// returns services created on this connection and not detached services.
     pub async fn list_hidden_services(&mut self) -> Result<Vec<OnionAddressV3>> {
-        let response = self
-            .conn
-            .get_info_unquote("onions/current")
-            .await
-            .context("Failed to query onions/current")?;
+        let response = self.list_hidden_services_raw().await?;
 
         let mut services = Vec::new();
         for line in response.lines().map(str::trim).filter(|l| !l.is_empty()) {
@@ -225,6 +224,36 @@ impl TorControl {
         }
 
         Ok(services)
+    }
+
+    /// Return the raw `GETINFO onions/current` response.
+    pub async fn list_hidden_services_raw(&mut self) -> Result<String> {
+        self.conn
+            .get_info_unquote("onions/current")
+            .await
+            .context("Failed to query onions/current")
+    }
+
+    /// List hidden services that are detached from the current control connection.
+    pub async fn list_hidden_services_detached(&mut self) -> Result<Vec<OnionAddressV3>> {
+        let response = self.list_hidden_services_detached_raw().await?;
+
+        let mut services = Vec::new();
+        for line in response.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            let addr = OnionAddressV3::from_str(line)
+                .with_context(|| format!("Invalid onion address from Tor: {}", line))?;
+            services.push(addr);
+        }
+
+        Ok(services)
+    }
+
+    /// Return the raw `GETINFO onions/detached` response.
+    pub async fn list_hidden_services_detached_raw(&mut self) -> Result<String> {
+        self.conn
+            .get_info_unquote("onions/detached")
+            .await
+            .context("Failed to query onions/detached")
     }
 }
 
