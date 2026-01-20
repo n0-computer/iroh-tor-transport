@@ -14,6 +14,7 @@ n0-watcher = "0.6"
 n0-future = "0.3"
 quinn-udp = { package = "iroh-quinn-udp", version = "0.7" }
 tracing = "0.1"
+clap = { version = "4", features = ["derive"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ed25519-dalek = { version = "2", features = ["hazmat"] }
 rand = "0.9"

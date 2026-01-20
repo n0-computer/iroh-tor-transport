@@ -17,9 +17,11 @@ use bytes::Bytes;
 use iroh::{
     EndpointId, SecretKey,
     endpoint::transports::{Addr, Transmit, UserSender, UserTransport, UserTransportFactory},
+    discovery::{Discovery, DiscoveryItem, EndpointData, EndpointInfo, DiscoveryError},
+    TransportAddr,
 };
 use iroh_base::UserAddr;
-use n0_future::boxed::BoxFuture;
+use n0_future::{boxed::BoxFuture, stream};
 use n0_watcher::Watchable;
 use sha2::{Digest, Sha512};
 use tokio::{net::TcpStream, sync::Mutex, time::sleep};
@@ -106,6 +108,27 @@ pub const TOR_USER_TRANSPORT_ID: u64 = 0x544f52;
 /// Build a user transport address for the Tor transport.
 pub fn tor_user_addr(endpoint: EndpointId) -> UserAddr {
     UserAddr::from_parts(TOR_USER_TRANSPORT_ID, endpoint.as_bytes())
+}
+
+/// Discovery service that maps any `EndpointId` to its Tor user transport address.
+#[derive(Debug, Clone)]
+pub struct TorUserAddrDiscovery;
+
+impl Discovery for TorUserAddrDiscovery {
+    fn resolve(
+        &self,
+        endpoint_id: EndpointId,
+    ) -> Option<n0_future::boxed::BoxStream<Result<DiscoveryItem, DiscoveryError>>> {
+        let info = EndpointInfo {
+            endpoint_id,
+            data: EndpointData::new([TransportAddr::User(tor_user_addr(endpoint_id))]),
+        };
+        Some(Box::pin(stream::once(Ok(DiscoveryItem::new(
+            info,
+            "tor-user-addr",
+            None,
+        )))))
+    }
 }
 
 fn parse_user_addr(addr: &UserAddr) -> Result<EndpointId> {
