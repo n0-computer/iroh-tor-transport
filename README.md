@@ -49,7 +49,9 @@ Each packet is framed as:
 
 ## Example
 
-- `examples/echo.rs`: CLI to accept/connect a single echo round over Tor
+`examples/echo.rs` provides a CLI to accept/connect a single echo round over Tor.
+It uses only the remote `EndpointId` when connecting; the onion address is derived
+from the public key.
 
 ## Tests
 

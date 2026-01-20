@@ -30,7 +30,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 pub use torut::onion::TorSecretKeyV3;
 use torut::{
     control::{AuthenticatedConn, ConnError, UnauthenticatedConn},
-    onion::OnionAddressV3,
+    onion::{OnionAddressV3, TorPublicKeyV3},
 };
 
 /// Default Tor control port
@@ -74,6 +74,14 @@ pub fn generate_tor_key() -> TorSecretKeyV3 {
 pub fn onion_address(key: &SecretKey) -> OnionAddressV3 {
     let tor_key = iroh_to_tor_secret_key(key);
     tor_key.public().get_onion_address()
+}
+
+/// Get the onion address for an iroh `EndpointId` (public key only).
+pub fn onion_address_from_endpoint(endpoint: EndpointId) -> Result<OnionAddressV3> {
+    let bytes = endpoint.as_bytes();
+    let tor_public = TorPublicKeyV3::from_bytes(bytes)
+        .context("Invalid endpoint public key for Tor")?;
+    Ok(tor_public.get_onion_address())
 }
 
 /// Type alias for the async event handler function.

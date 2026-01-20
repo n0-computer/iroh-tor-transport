@@ -1827,6 +1827,7 @@ dependencies = [
  "anyhow",
  "bytes",
  "clap",
+ "data-encoding",
  "ed25519-dalek 2.2.0",
  "iroh",
  "iroh-base",

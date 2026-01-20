@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::env;
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -6,16 +5,18 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use data_encoding::HEXLOWER;
 use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey, TransportAddr};
 use iroh_tor::{
     TorControl, TorStreamIo, TorUserAddrDiscovery, TorUserTransportFactory,
     DEFAULT_CONTROL_PORT, DEFAULT_SOCKS_PORT, iroh_to_tor_secret_key, tor_user_addr,
+    onion_address_from_endpoint,
 };
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
 use tokio_socks::tcp::Socks5Stream;
+use tokio::time::{sleep, timeout};
 
 const ALPN: &[u8] = b"iroh-tor/user-transport/0";
 const ONION_PORT: u16 = 9999;
@@ -36,9 +37,6 @@ enum Command {
         /// Remote endpoint id (base32-hex encoding used by iroh).
         #[arg(long)]
         remote: String,
-        /// Remote onion address (e.g. abcdefg... .onion).
-        #[arg(long)]
-        onion: String,
     },
 }
 
@@ -63,17 +61,28 @@ fn init_tracing() {
         .ok();
 }
 
-fn load_secret() -> Result<SecretKey> {
+fn load_secret() -> Result<(SecretKey, Option<String>)> {
     if let Ok(value) = env::var("IROH_SECRET") {
-        SecretKey::from_str(&value).context("invalid IROH_SECRET (expected base32-hex)") 
+        let bytes = HEXLOWER
+            .decode(value.as_bytes())
+            .context("invalid IROH_SECRET (expected hex)")?;
+        if bytes.len() != 32 {
+            return Err(anyhow::anyhow!(
+                "invalid IROH_SECRET length (expected 32 bytes)"
+            ));
+        }
+        let key_bytes: [u8; 32] = bytes[..].try_into().expect("length checked");
+        let key = SecretKey::from_bytes(&key_bytes);
+        Ok((key, None))
     } else {
-        Ok(SecretKey::generate(&mut rand::rng()))
+        let key = SecretKey::generate(&mut rand::rng());
+        let encoded = HEXLOWER.encode(&key.to_bytes());
+        Ok((key, Some(encoded)))
     }
 }
 
 async fn build_tor_io(
     listener: TcpListener,
-    map: Arc<Mutex<HashMap<EndpointId, String>>>,
     socks_addr: SocketAddr,
 ) -> Arc<TorStreamIo> {
     Arc::new(TorStreamIo::new(
@@ -88,18 +97,12 @@ async fn build_tor_io(
             }
         },
         {
-            move |endpoint| {
-                let map = map.clone();
-                async move {
-                    let onion = map
-                        .lock()
-                        .await
-                        .get(&endpoint)
-                        .cloned()
-                        .context("missing onion address")?;
-                    let stream = Socks5Stream::connect(socks_addr, (onion.as_str(), ONION_PORT)).await?;
-                    Ok(stream.into_inner())
-                }
+            move |endpoint| async move {
+                let onion = onion_address_from_endpoint(endpoint)?;
+                let onion_addr = format!("{}.onion", onion.get_address_without_dot_onion());
+                let stream =
+                    Socks5Stream::connect(socks_addr, (onion_addr.as_str(), ONION_PORT)).await?;
+                Ok(stream.into_inner())
             }
         },
     ))
@@ -120,12 +123,34 @@ async fn setup_endpoint(
         .await?)
 }
 
+async fn connect_with_retry(
+    ep: &Endpoint,
+    addr: EndpointAddr,
+    alpn: &[u8],
+    timeout_per_attempt: std::time::Duration,
+    max_attempts: usize,
+) -> Result<iroh::endpoint::Connection> {
+    let mut last_err: Option<anyhow::Error> = None;
+    for attempt in 1..=max_attempts {
+        tracing::info!("connect attempt {attempt}/{max_attempts}");
+        match timeout(timeout_per_attempt, ep.connect(addr.clone(), alpn)).await {
+            Ok(Ok(conn)) => return Ok(conn),
+            Ok(Err(err)) => last_err = Some(anyhow::Error::new(err)),
+            Err(err) => last_err = Some(anyhow::anyhow!("connect timed out: {err}")),
+        }
+        if attempt < max_attempts {
+            sleep(std::time::Duration::from_secs(5)).await;
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("connect failed")))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     init_tracing();
 
     let cli = Cli::parse();
-    let secret = load_secret()?;
+    let (secret, secret_hint) = load_secret()?;
     let endpoint_id = secret.public();
 
     let control_addr = format!("127.0.0.1:{}", DEFAULT_CONTROL_PORT);
@@ -142,29 +167,31 @@ async fn main() -> Result<()> {
         .await?;
 
     println!("EndpointId: {}", endpoint_id);
+    if let Some(secret) = secret_hint {
+        println!("Set IROH_SECRET={} to reuse this endpoint id.", secret);
+    }
     println!("Onion: {}.onion", onion.get_address_without_dot_onion());
 
-    let map: Arc<Mutex<HashMap<EndpointId, String>>> = Arc::new(Mutex::new(HashMap::new()));
-    let io = build_tor_io(listener, map.clone(), socks_addr).await;
+    let io = build_tor_io(listener, socks_addr).await;
     let ep = Arc::new(setup_endpoint(&secret, io).await?);
 
     let ep_accept = ep.clone();
     if matches!(cli.command, Command::Accept) {
         let _router = Router::builder((*ep_accept).clone()).accept(ALPN, Echo).spawn();
-        println!("Waiting for a single connection...");
+        println!("Accepting connections (Ctrl-C to exit)...");
         tokio::signal::ctrl_c().await?;
         return Ok(());
     }
 
-    let Command::Connect { remote, onion } = cli.command else {
+    let Command::Connect { remote } = cli.command else {
         unreachable!();
     };
 
     let remote_id = EndpointId::from_str(&remote).context("invalid --remote EndpointId")?;
-    map.lock().await.insert(remote_id, onion);
 
     let addr = EndpointAddr::from_parts(remote_id, [TransportAddr::User(tor_user_addr(remote_id))]);
-    let conn = ep.as_ref().connect(addr, ALPN).await?;
+    let conn = connect_with_retry(ep.as_ref(), addr, ALPN, std::time::Duration::from_secs(30), 10)
+        .await?;
     let (mut send, mut recv) = conn.open_bi().await?;
     send.write_all(b"hello tor user transport").await?;
     send.finish()?;
