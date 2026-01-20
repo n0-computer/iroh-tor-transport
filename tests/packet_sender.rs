@@ -4,32 +4,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use bytes::Bytes;
 use iroh::SecretKey;
-use iroh_tor::{read_tor_packet, TorPacket, TorPacketSender, TorStreamConnector};
+use iroh_tor::{read_tor_packet, TorPacket, TorPacketSender, TorStreamIo};
 use tokio::net::{TcpListener, TcpStream};
-
-#[derive(Clone)]
-struct TestConnector {
-    addr: std::net::SocketAddr,
-    connects: Arc<AtomicUsize>,
-}
-
-impl TorStreamConnector for TestConnector {
-    fn connect(
-        &self,
-        _endpoint: iroh::EndpointId,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TcpStream>> + Send>> {
-        let addr = self.addr;
-        let connects = self.connects.clone();
-        Box::pin(async move {
-            connects.fetch_add(1, Ordering::SeqCst);
-            let stream = TcpStream::connect(addr).await?;
-            Ok(stream)
-        })
-    }
-}
 
 #[tokio::test]
 async fn test_sender_reuses_connection() -> Result<()> {
@@ -52,8 +31,21 @@ async fn test_sender_reuses_connection() -> Result<()> {
     });
 
     let connects = Arc::new(AtomicUsize::new(0));
-    let connector = Arc::new(TestConnector { addr, connects: connects.clone() });
-    let sender = TorPacketSender::new(connector);
+    let io = Arc::new(TorStreamIo::new(
+        || async { Err(anyhow!("accept not used in this test")) },
+        {
+            let connects = connects.clone();
+            move |_endpoint| {
+                let connects = connects.clone();
+                async move {
+                    connects.fetch_add(1, Ordering::SeqCst);
+                    let stream = TcpStream::connect(addr).await?;
+                    Ok(stream)
+                }
+            }
+        },
+    ));
+    let sender = TorPacketSender::new(io);
 
     let to = SecretKey::generate(&mut rand::rng()).public();
     let from = SecretKey::generate(&mut rand::rng()).public();

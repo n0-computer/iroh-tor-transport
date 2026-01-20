@@ -1734,6 +1734,7 @@ dependencies = [
  "iroh",
  "iroh-base",
  "iroh-quinn-udp",
+ "n0-future",
  "n0-watcher",
  "rand 0.9.2",
  "sha2 0.10.9",

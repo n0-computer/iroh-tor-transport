@@ -11,6 +11,7 @@ anyhow = "1"
 bytes = "1"
 iroh-base = { git = "https://github.com/n0-computer/iroh", branch = "feat-user-transport-2", package = "iroh-base" }
 n0-watcher = "0.6"
+n0-future = "0.3"
 quinn-udp = { package = "iroh-quinn-udp", version = "0.7" }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

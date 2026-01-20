@@ -19,6 +19,7 @@ use iroh::{
     endpoint::transports::{Addr, Transmit, UserSender, UserTransport, UserTransportFactory},
 };
 use iroh_base::UserAddr;
+use n0_future::boxed::BoxFuture;
 use n0_watcher::Watchable;
 use sha2::{Digest, Sha512};
 use tokio::{net::TcpStream, sync::Mutex, time::sleep};
@@ -102,7 +103,8 @@ const FLAG_SEGMENT_SIZE: u8 = 0x01;
 /// Transport id for the Tor user transport.
 pub const TOR_USER_TRANSPORT_ID: u64 = 0x544f52;
 
-fn tor_user_addr(endpoint: EndpointId) -> UserAddr {
+/// Build a user transport address for the Tor transport.
+pub fn tor_user_addr(endpoint: EndpointId) -> UserAddr {
     UserAddr::from_parts(TOR_USER_TRANSPORT_ID, endpoint.as_bytes())
 }
 
@@ -230,9 +232,9 @@ impl TorPacketService {
 /// Connector for establishing Tor-backed streams keyed by endpoint id.
 /// IO for Tor-backed streams.
 pub struct TorStreamIo {
-    accept: Box<dyn Fn() -> Pin<Box<dyn Future<Output = Result<TcpStream>> + Send>> + Send + Sync>,
+    accept: Box<dyn Fn() -> BoxFuture<Result<TcpStream>> + Send + Sync>,
     connect: Box<
-        dyn Fn(EndpointId) -> Pin<Box<dyn Future<Output = Result<TcpStream>> + Send>> + Send + Sync,
+        dyn Fn(EndpointId) -> BoxFuture<Result<TcpStream>> + Send + Sync,
     >,
 }
 
@@ -255,12 +257,12 @@ impl TorStreamIo {
     pub fn connect(
         &self,
         endpoint: EndpointId,
-    ) -> Pin<Box<dyn Future<Output = Result<TcpStream>> + Send>> {
+    ) -> BoxFuture<Result<TcpStream>> {
         (self.connect)(endpoint)
     }
 
     /// Accept the next incoming stream.
-    pub fn accept(&self) -> Pin<Box<dyn Future<Output = Result<TcpStream>> + Send>> {
+    pub fn accept(&self) -> BoxFuture<Result<TcpStream>> {
         (self.accept)()
     }
 }
