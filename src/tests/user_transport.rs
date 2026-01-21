@@ -43,8 +43,12 @@ fn init_tracing() {
     });
 }
 
-async fn setup_endpoint(sk: SecretKey, io: Arc<TorStreamIo>, use_user_discovery: bool) -> Result<Endpoint> {
-    let transport = TorUserTransport::builder(sk.clone()).io(io).build().await;
+async fn setup_endpoint(
+    sk: SecretKey,
+    io: Arc<TorStreamIo>,
+    use_user_discovery: bool,
+) -> Result<Endpoint> {
+    let transport = TorUserTransport::builder(sk.clone()).io(io).build().await?;
     let discovery = transport.discovery();
     let mut builder = Endpoint::builder()
         .secret_key(sk)

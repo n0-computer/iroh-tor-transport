@@ -34,7 +34,8 @@ fn iroh_to_tor_secret_key(key: &SecretKey) -> TorSecretKeyV3 {
 type EventHandler = Box<
     dyn Fn(
             torut::control::AsyncEvent<'static>,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ConnError>> + Send>>
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ConnError>> + Send>>
         + Send
         + Sync,
 >;
