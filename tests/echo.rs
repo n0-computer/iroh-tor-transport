@@ -432,3 +432,105 @@ async fn test_echo_latency_10x_single_service() -> Result<()> {
     server_handle.abort();
     Ok(())
 }
+
+/// Test iroh user transport roundtrip over Tor.
+///
+/// This uses the public API only (TorUserTransport::builder).
+#[tokio::test]
+async fn test_user_transport_roundtrip_tor() -> Result<()> {
+    use iroh::{
+        Endpoint,
+        endpoint::Connection,
+        protocol::{AcceptError, ProtocolHandler, Router},
+    };
+    use iroh_tor::TorUserTransport;
+    use tokio::time::sleep;
+
+    const ALPN: &[u8] = b"iroh-tor/user-transport/0";
+
+    #[derive(Debug, Clone)]
+    struct Echo;
+
+    impl ProtocolHandler for Echo {
+        async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+            let (mut send, mut recv) = connection.accept_bi().await?;
+            let bytes_sent = tokio::io::copy(&mut recv, &mut send).await?;
+            info!("echo copied {bytes_sent} bytes");
+            send.finish()?;
+            connection.closed().await;
+            Ok(())
+        }
+    }
+
+    async fn connect_with_retry(
+        ep: &Endpoint,
+        id: iroh::EndpointId,
+        alpn: &[u8],
+        timeout_per_attempt: Duration,
+        max_attempts: usize,
+    ) -> Result<iroh::endpoint::Connection> {
+        let mut last_err: Option<anyhow::Error> = None;
+        for attempt in 1..=max_attempts {
+            info!("connect attempt {attempt}/{max_attempts}");
+            match timeout(timeout_per_attempt, ep.connect(id, alpn)).await {
+                Ok(Ok(conn)) => return Ok(conn),
+                Ok(Err(err)) => last_err = Some(anyhow::Error::new(err)),
+                Err(err) => last_err = Some(anyhow::anyhow!("connect timed out: {err}")),
+            }
+            if attempt < max_attempts {
+                sleep(Duration::from_secs(5)).await;
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("connect failed")))
+    }
+
+    init_tracing();
+    info!("starting tor user-transport test");
+
+    let sk1 = SecretKey::generate(&mut rand::rng());
+    let sk2 = SecretKey::generate(&mut rand::rng());
+    let id2 = sk2.public();
+
+    // Build transports using the real Tor builder (creates hidden services)
+    let transport1 = TorUserTransport::builder(sk1.clone())
+        .build()
+        .await
+        .context("Failed to create transport1. Is Tor running with ControlPort 9051?")?;
+    let transport2 = TorUserTransport::builder(sk2.clone())
+        .build()
+        .await
+        .context("Failed to create transport2")?;
+
+    let ep1 = Endpoint::builder()
+        .secret_key(sk1)
+        .clear_ip_transports()
+        .clear_relay_transports()
+        .clear_discovery()
+        .preset(transport1.preset())
+        .bind()
+        .await?;
+
+    let ep2 = Endpoint::builder()
+        .secret_key(sk2)
+        .clear_ip_transports()
+        .clear_relay_transports()
+        .clear_discovery()
+        .preset(transport2.preset())
+        .bind()
+        .await?;
+
+    info!("endpoints bound with tor hidden services");
+
+    let _server = Router::builder(ep2).accept(ALPN, Echo).spawn();
+
+    info!("dialing remote endpoint via tor");
+    let conn = connect_with_retry(&ep1, id2, ALPN, Duration::from_secs(60), 10).await?;
+    let (mut send, mut recv) = conn.open_bi().await?;
+    send.write_all(b"hello tor user transport").await?;
+    send.finish()?;
+    let response = recv.read_to_end(1024).await?;
+    assert_eq!(&response, b"hello tor user transport");
+    info!("tor user-transport test completed");
+
+    Ok(())
+}

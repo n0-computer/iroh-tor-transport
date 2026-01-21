@@ -158,3 +158,23 @@ fn test_onion_address_deterministic() {
 
     assert_eq!(addr1.to_string(), addr2.to_string());
 }
+
+#[test]
+fn test_onion_address_methods_match() {
+    use crate::onion_address_from_endpoint;
+
+    let iroh_key = SecretKey::generate(&mut rand::rng());
+    let endpoint_id = iroh_key.public();
+
+    // Method 1: Via secret key conversion (used by builder to create hidden service)
+    let addr_via_secret = onion_address(&iroh_key);
+
+    // Method 2: Via endpoint ID (used by connect to derive target address)
+    let addr_via_endpoint = onion_address_from_endpoint(endpoint_id).unwrap();
+
+    assert_eq!(
+        addr_via_secret.to_string(),
+        addr_via_endpoint.to_string(),
+        "Onion addresses derived from secret key and endpoint ID must match!"
+    );
+}

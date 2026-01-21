@@ -126,10 +126,10 @@ async fn main() -> Result<()> {
     let ep = Arc::new(
         Endpoint::builder()
             .secret_key(secret)
-            .preset(transport.preset())
             .clear_ip_transports()
             .clear_relay_transports()
             .clear_discovery()
+            .preset(transport.preset())
             .bind()
             .await?,
     );

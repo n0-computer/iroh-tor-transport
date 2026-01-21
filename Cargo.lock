@@ -1620,7 +1620,7 @@ dependencies = [
 [[package]]
 name = "iroh"
 version = "0.95.1"
-source = "git+https://github.com/n0-computer/iroh?branch=feat-user-transport-2#3389b1c73f6f434706738d39a2e855cae93df947"
+source = "git+https://github.com/n0-computer/iroh?branch=feat-user-transport-2#5095a5306c01f5d9e42c126f8d751677c50e1340"
 dependencies = [
  "backon",
  "bytes",
@@ -1673,7 +1673,7 @@ dependencies = [
 [[package]]
 name = "iroh-base"
 version = "0.95.1"
-source = "git+https://github.com/n0-computer/iroh?branch=feat-user-transport-2#3389b1c73f6f434706738d39a2e855cae93df947"
+source = "git+https://github.com/n0-computer/iroh?branch=feat-user-transport-2#5095a5306c01f5d9e42c126f8d751677c50e1340"
 dependencies = [
  "curve25519-dalek 5.0.0-pre.1",
  "data-encoding",
@@ -1777,7 +1777,7 @@ dependencies = [
 [[package]]
 name = "iroh-relay"
 version = "0.95.1"
-source = "git+https://github.com/n0-computer/iroh?branch=feat-user-transport-2#3389b1c73f6f434706738d39a2e855cae93df947"
+source = "git+https://github.com/n0-computer/iroh?branch=feat-user-transport-2#5095a5306c01f5d9e42c126f8d751677c50e1340"
 dependencies = [
  "blake3",
  "bytes",

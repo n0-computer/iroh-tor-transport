@@ -13,7 +13,7 @@ use iroh::{
     endpoint::{
         Builder,
         presets::Preset,
-        transports::{Addr, Transmit, UserSender, UserTransport, UserTransportFactory},
+        transports::{Addr, Transmit, UserEndpoint, UserSender, UserTransport},
     },
 };
 use iroh_base::UserAddr;
@@ -386,7 +386,11 @@ impl TorUserTransportBuilder {
 
         #[cfg(test)]
         if let Some(io) = self.io {
-            return Ok(TorUserTransport { local_id, io });
+            return Ok(TorUserTransport {
+                local_id,
+                io,
+                control_conn: None,
+            });
         }
 
         // Bind local listener
@@ -457,7 +461,11 @@ impl TorUserTransportBuilder {
             },
         ));
 
-        Ok(TorUserTransport { local_id, io })
+        Ok(TorUserTransport {
+            local_id,
+            io,
+            control_conn: Some(Arc::new(conn)),
+        })
     }
 }
 
@@ -479,9 +487,15 @@ impl TorUserTransportBuilder {
 ///     .bind()
 ///     .await?
 /// ```
+#[derive(Clone)]
 pub struct TorUserTransport {
     local_id: EndpointId,
     io: Arc<TorStreamIo>,
+    /// Keep the control connection alive to maintain the ephemeral hidden service.
+    /// The hidden service is removed when this connection is dropped.
+    /// Wrapped in Arc so it can be shared with TorUserTransportInstance.
+    #[allow(dead_code)]
+    control_conn: Option<Arc<AuthenticatedConn<TcpStream, EventHandler>>>,
 }
 
 impl TorUserTransport {
@@ -523,9 +537,9 @@ impl TorUserTransport {
     ///     .bind()
     ///     .await?
     /// ```
-    pub fn preset(self) -> impl Preset {
+    pub fn preset(&self) -> impl Preset {
         TorPreset {
-            factory: Arc::new(self),
+            factory: Arc::new(self.clone()),
         }
     }
 }
@@ -538,8 +552,8 @@ impl std::fmt::Debug for TorUserTransport {
     }
 }
 
-impl UserTransportFactory for TorUserTransport {
-    fn bind(&self) -> std::io::Result<Box<dyn UserTransport>> {
+impl UserTransport for TorUserTransport {
+    fn bind(&self) -> std::io::Result<Box<dyn UserEndpoint>> {
         let (tx, rx) = tokio::sync::mpsc::channel(DEFAULT_RECV_CAPACITY);
         let service = TorPacketService::new(tx);
         let sender = Arc::new(TorPacketSender::new(self.io.clone()));
@@ -568,13 +582,14 @@ impl UserTransportFactory for TorUserTransport {
             watchable,
             receiver: rx,
             sender,
+            _control_conn: self.control_conn.clone(),
         }))
     }
 }
 
 /// Internal preset for configuring an iroh endpoint to use the Tor transport.
 struct TorPreset {
-    factory: Arc<dyn UserTransportFactory>,
+    factory: Arc<dyn UserTransport>,
 }
 
 impl Preset for TorPreset {
@@ -593,6 +608,9 @@ struct TorUserTransportInstance {
     watchable: Watchable<Vec<UserAddr>>,
     receiver: tokio::sync::mpsc::Receiver<TorPacket>,
     sender: Arc<TorPacketSender>,
+    /// Keep the control connection alive to maintain the ephemeral hidden service.
+    #[allow(dead_code)]
+    _control_conn: Option<Arc<AuthenticatedConn<TcpStream, EventHandler>>>,
 }
 
 impl std::fmt::Debug for TorUserTransportInstance {
@@ -654,7 +672,7 @@ impl UserSender for TorUserSender {
     }
 }
 
-impl UserTransport for TorUserTransportInstance {
+impl UserEndpoint for TorUserTransportInstance {
     fn watch_local_addrs(&self) -> n0_watcher::Direct<Vec<UserAddr>> {
         self.watchable.watch()
     }
