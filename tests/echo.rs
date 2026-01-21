@@ -444,7 +444,6 @@ async fn test_user_transport_roundtrip_tor() -> Result<()> {
         protocol::{AcceptError, ProtocolHandler, Router},
     };
     use iroh_tor::TorUserTransport;
-    use tokio::time::sleep;
 
     const ALPN: &[u8] = b"iroh-tor/user-transport/0";
 
@@ -460,28 +459,6 @@ async fn test_user_transport_roundtrip_tor() -> Result<()> {
             connection.closed().await;
             Ok(())
         }
-    }
-
-    async fn connect_with_retry(
-        ep: &Endpoint,
-        id: iroh::EndpointId,
-        alpn: &[u8],
-        timeout_per_attempt: Duration,
-        max_attempts: usize,
-    ) -> Result<iroh::endpoint::Connection> {
-        let mut last_err: Option<anyhow::Error> = None;
-        for attempt in 1..=max_attempts {
-            info!("connect attempt {attempt}/{max_attempts}");
-            match timeout(timeout_per_attempt, ep.connect(id, alpn)).await {
-                Ok(Ok(conn)) => return Ok(conn),
-                Ok(Err(err)) => last_err = Some(anyhow::Error::new(err)),
-                Err(err) => last_err = Some(anyhow::anyhow!("connect timed out: {err}")),
-            }
-            if attempt < max_attempts {
-                sleep(Duration::from_secs(5)).await;
-            }
-        }
-        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("connect failed")))
     }
 
     init_tracing();
@@ -524,7 +501,7 @@ async fn test_user_transport_roundtrip_tor() -> Result<()> {
     let _server = Router::builder(ep2).accept(ALPN, Echo).spawn();
 
     info!("dialing remote endpoint via tor");
-    let conn = connect_with_retry(&ep1, id2, ALPN, Duration::from_secs(60), 10).await?;
+    let conn = ep1.connect(id2, ALPN).await?;
     let (mut send, mut recv) = conn.open_bi().await?;
     send.write_all(b"hello tor user transport").await?;
     send.finish()?;
