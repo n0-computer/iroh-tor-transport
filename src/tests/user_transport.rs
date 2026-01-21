@@ -52,7 +52,7 @@ async fn setup_endpoint(
     let discovery = transport.discovery();
     let mut builder = Endpoint::builder()
         .secret_key(sk)
-        .add_user_transport(Arc::new(transport))
+        .add_user_transport(transport)
         .clear_ip_transports()
         .clear_relay_transports()
         .clear_discovery();

@@ -381,16 +381,16 @@ impl TorUserTransportBuilder {
     /// Returns an error if:
     /// - Cannot connect to the Tor control port
     /// - Cannot create the hidden service
-    pub async fn build(self) -> Result<TorUserTransport> {
+    pub async fn build(self) -> Result<Arc<TorUserTransport>> {
         let local_id = self.secret_key.public();
 
         #[cfg(test)]
         if let Some(io) = self.io {
-            return Ok(TorUserTransport {
+            return Ok(Arc::new(TorUserTransport {
                 local_id,
                 io,
                 control_conn: None,
-            });
+            }));
         }
 
         // Bind local listener
@@ -461,11 +461,11 @@ impl TorUserTransportBuilder {
             },
         ));
 
-        Ok(TorUserTransport {
+        Ok(Arc::new(TorUserTransport {
             local_id,
             io,
             control_conn: Some(Arc::new(conn)),
-        })
+        }))
     }
 }
 
@@ -493,7 +493,7 @@ pub struct TorUserTransport {
     io: Arc<TorStreamIo>,
     /// Keep the control connection alive to maintain the ephemeral hidden service.
     /// The hidden service is removed when this connection is dropped.
-    /// Wrapped in Arc so it can be shared with TorUserTransportInstance.
+    /// Wrapped in Arc so it can be shared with TorUserEndpoint.
     #[allow(dead_code)]
     control_conn: Option<Arc<AuthenticatedConn<TcpStream, EventHandler>>>,
 }
@@ -537,9 +537,9 @@ impl TorUserTransport {
     ///     .bind()
     ///     .await?
     /// ```
-    pub fn preset(&self) -> impl Preset {
+    pub fn preset(self: &Arc<Self>) -> impl Preset {
         TorPreset {
-            factory: Arc::new(self.clone()),
+            factory: self.clone(),
         }
     }
 }
@@ -577,12 +577,11 @@ impl UserTransport for TorUserTransport {
             }
         });
 
-        Ok(Box::new(TorUserTransportInstance {
+        Ok(Box::new(TorUserEndpoint {
             local_id: self.local_id,
             watchable,
             receiver: rx,
             sender,
-            _control_conn: self.control_conn.clone(),
         }))
     }
 }
@@ -600,22 +599,22 @@ impl Preset for TorPreset {
     }
 }
 
-/// Active Tor transport instance created by [`TorUserTransport::bind()`].
+/// Active Tor user endpoint created by [`TorUserTransport::bind()`].
 ///
-/// This is the actual transport that handles sending and receiving packets.
-struct TorUserTransportInstance {
+/// This is the actual endpoint that handles sending and receiving packets.
+/// Note: The control connection (and thus the hidden service) is kept alive by
+/// the `Arc<TorUserTransport>` that the user holds. The user must keep it alive
+/// for the lifetime of the endpoint.
+struct TorUserEndpoint {
     local_id: EndpointId,
     watchable: Watchable<Vec<UserAddr>>,
     receiver: tokio::sync::mpsc::Receiver<TorPacket>,
     sender: Arc<TorPacketSender>,
-    /// Keep the control connection alive to maintain the ephemeral hidden service.
-    #[allow(dead_code)]
-    _control_conn: Option<Arc<AuthenticatedConn<TcpStream, EventHandler>>>,
 }
 
-impl std::fmt::Debug for TorUserTransportInstance {
+impl std::fmt::Debug for TorUserEndpoint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TorUserTransportInstance")
+        f.debug_struct("TorUserEndpoint")
             .field("local_id", &self.local_id)
             .finish()
     }
@@ -672,7 +671,7 @@ impl UserSender for TorUserSender {
     }
 }
 
-impl UserEndpoint for TorUserTransportInstance {
+impl UserEndpoint for TorUserEndpoint {
     fn watch_local_addrs(&self) -> n0_watcher::Direct<Vec<UserAddr>> {
         self.watchable.watch()
     }
