@@ -6,11 +6,9 @@ Tor hidden-service utilities and a custom iroh transport for routing packets ove
 
 ## What is iroh-tor?
 
-`iroh-tor` provides:
-
-- helpers for Tor v3 hidden services (key conversion, control port helpers)
-- a framed packet protocol for streaming packets over Tor
-- a custom iroh user transport that uses Tor streams
+`iroh-tor` provides a custom iroh user transport that routes packets over Tor hidden services.
+Given only an iroh `EndpointId`, it derives the corresponding `.onion` address and connects
+through the Tor network.
 
 ## Getting started
 
@@ -24,20 +22,31 @@ tor --ControlPort 9051 --CookieAuthentication 0
 
 ### Custom transport
 
-At a high level, you provide `TorStreamIo` (accept/connect), and the transport
-handles framing, packet I/O, and stream reuse:
+The transport connects to Tor's control port, creates an ephemeral hidden service,
+and handles packet framing and stream reuse:
 
 ```rust
-use std::sync::Arc;
-use iroh_tor::{TorStreamIo, TorUserTransport};
+use iroh::{Endpoint, SecretKey};
+use iroh_tor::TorUserTransport;
 
-let io = Arc::new(TorStreamIo::new(accept_fn, connect_fn));
-let config = TorUserTransport::builder(endpoint_id, io).build();
+let secret_key = SecretKey::generate(&mut rand::rng());
 
-// On the iroh Endpoint builder:
-// .add_user_transport(config.factory())
-// .discovery(config.discovery())
+// Build the transport (creates hidden service)
+let transport = TorUserTransport::builder(secret_key.clone())
+    .build()
+    .await?;
+
+// Build the endpoint with the Tor transport
+let endpoint = Endpoint::builder()
+    .secret_key(secret_key)
+    .preset(transport.preset())
+    .bind()
+    .await?;
 ```
+
+The `preset()` method configures the endpoint with:
+- The Tor user transport
+- A discovery service that derives Tor addresses from endpoint IDs
 
 ## Packet framing
 
@@ -51,9 +60,17 @@ Each packet is framed as:
 
 ## Example
 
-`examples/echo.rs` provides a CLI to accept/connect a single echo round over Tor.
-It uses only the remote `EndpointId` when connecting; the onion address is derived
-from the public key.
+`examples/echo.rs` provides a CLI for echo server/client over Tor:
+
+```bash
+# Terminal 1: Start the echo server
+cargo run --example echo -- accept
+
+# Terminal 2: Connect to the server (use the EndpointId printed by the server)
+cargo run --example echo -- connect <ENDPOINT_ID>
+```
+
+The onion address is derived from the `EndpointId`, so you only need the endpoint ID to connect.
 
 ## Tests
 

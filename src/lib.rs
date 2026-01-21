@@ -347,6 +347,13 @@ type EventHandler = Box<
 >;
 
 /// Builder for [`TorUserTransport`].
+/// Builder for [`TorUserTransport`].
+///
+/// # Defaults
+///
+/// - SOCKS5 proxy port: 9050
+/// - Control port: 9051
+/// - Onion service port: 9999
 pub struct TorUserTransportBuilder {
     secret_key: SecretKey,
     socks_port: u16,

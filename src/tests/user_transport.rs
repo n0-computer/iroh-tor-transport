@@ -43,23 +43,16 @@ fn init_tracing() {
     });
 }
 
-async fn setup_endpoint(
-    sk: SecretKey,
-    io: Arc<TorStreamIo>,
-    use_user_discovery: bool,
-) -> Result<Endpoint> {
+async fn setup_endpoint(sk: SecretKey, io: Arc<TorStreamIo>) -> Result<Endpoint> {
     let transport = TorUserTransport::builder(sk.clone()).io(io).build().await?;
-    let discovery = transport.discovery();
-    let mut builder = Endpoint::builder()
+    Ok(Endpoint::builder()
         .secret_key(sk)
-        .add_user_transport(transport)
         .clear_ip_transports()
         .clear_relay_transports()
-        .clear_discovery();
-    if use_user_discovery {
-        builder = builder.discovery(discovery);
-    }
-    Ok(builder.bind().await?)
+        .clear_discovery()
+        .preset(transport.preset())
+        .bind()
+        .await?)
 }
 
 async fn build_local_io(
@@ -123,8 +116,8 @@ async fn test_user_transport_roundtrip_local() -> Result<()> {
     let io1 = build_local_io(listener1, map.clone()).await;
     let io2 = build_local_io(listener2, map.clone()).await;
 
-    let ep1 = setup_endpoint(sk1, io1, true).await?;
-    let ep2 = setup_endpoint(sk2, io2, true).await?;
+    let ep1 = setup_endpoint(sk1, io1).await?;
+    let ep2 = setup_endpoint(sk2, io2).await?;
     info!("endpoints bound");
 
     let _server = Router::builder(ep2).accept(ALPN, Echo).spawn();

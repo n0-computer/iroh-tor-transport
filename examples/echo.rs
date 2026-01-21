@@ -35,7 +35,6 @@ enum Command {
     /// Connect to a remote endpoint and perform a single echo round.
     Connect {
         /// Remote endpoint id (base32-hex encoding used by iroh).
-        #[arg(long)]
         remote: String,
     },
 }
@@ -134,33 +133,29 @@ async fn main() -> Result<()> {
             .await?,
     );
 
-    if matches!(cli.command, Command::Accept) {
-        let _router = Router::builder((*ep).clone()).accept(ALPN, Echo).spawn();
-        println!("Accepting connections (Ctrl-C to exit)...");
-        tokio::signal::ctrl_c().await?;
-        return Ok(());
+    match cli.command {
+        Command::Accept => {
+            let _router = Router::builder((*ep).clone()).accept(ALPN, Echo).spawn();
+            println!("Accepting connections (Ctrl-C to exit)...");
+            tokio::signal::ctrl_c().await?;
+        }
+        Command::Connect { remote } => {
+            let remote_id = EndpointId::from_str(&remote).context("invalid --remote EndpointId")?;
+            let conn = connect_with_retry(
+                ep.as_ref(),
+                remote_id,
+                ALPN,
+                std::time::Duration::from_secs(30),
+                10,
+            )
+            .await?;
+            let (mut send, mut recv) = conn.open_bi().await?;
+            send.write_all(b"hello tor user transport").await?;
+            send.finish()?;
+            let response = recv.read_to_end(1024).await?;
+            println!("Echo response: {}", String::from_utf8_lossy(&response));
+        }
     }
-
-    let Command::Connect { remote } = cli.command else {
-        unreachable!();
-    };
-
-    let remote_id = EndpointId::from_str(&remote).context("invalid --remote EndpointId")?;
-
-    // Connect using discovery (the transport's discovery will provide the Tor address)
-    let conn = connect_with_retry(
-        ep.as_ref(),
-        remote_id,
-        ALPN,
-        std::time::Duration::from_secs(30),
-        10,
-    )
-    .await?;
-    let (mut send, mut recv) = conn.open_bi().await?;
-    send.write_all(b"hello tor user transport").await?;
-    send.finish()?;
-    let response = recv.read_to_end(1024).await?;
-    println!("Echo response: {}", String::from_utf8_lossy(&response));
 
     Ok(())
 }
