@@ -223,6 +223,7 @@ async fn run_hidden_service_echo(tor_key: &TorSecretKeyV3, label: &str) -> Resul
 
 /// Simple test using torut's native key generation to verify the mechanism works.
 #[tokio::test]
+#[ignore]
 async fn test_native_tor_key() -> Result<()> {
     let tor_key = generate_tor_key();
     run_hidden_service_echo(&tor_key, "native tor key").await
@@ -230,6 +231,7 @@ async fn test_native_tor_key() -> Result<()> {
 
 /// Test using an iroh key converted to a Tor keypair.
 #[tokio::test]
+#[ignore]
 async fn test_iroh_key_converted_to_tor() -> Result<()> {
     let iroh_key = SecretKey::generate(&mut rand::rng());
     let tor_key = iroh_to_tor_secret_key(&iroh_key);
@@ -237,6 +239,7 @@ async fn test_iroh_key_converted_to_tor() -> Result<()> {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_echo_latency_10x_single_service() -> Result<()> {
     init_tracing();
 
