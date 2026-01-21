@@ -347,15 +347,14 @@ type EventHandler = Box<
 >;
 
 /// Builder for [`TorUserTransport`].
-/// Builder for [`TorUserTransport`].
 ///
 /// # Defaults
 ///
 /// - SOCKS5 proxy port: 9050
 /// - Control port: 9051
 /// - Onion service port: 9999
+#[derive(Clone, Default)]
 pub struct TorUserTransportBuilder {
-    secret_key: SecretKey,
     socks_port: u16,
     control_port: u16,
     onion_port: u16,
@@ -394,6 +393,10 @@ impl TorUserTransportBuilder {
     /// This connects to the Tor control port, creates a hidden service,
     /// and sets up the transport IO.
     ///
+    /// # Arguments
+    ///
+    /// * `secret_key` - The iroh secret key for this endpoint
+    ///
     /// # Errors
     ///
     /// Returns an error if:
@@ -401,8 +404,8 @@ impl TorUserTransportBuilder {
     /// - Cannot connect to the Tor control port
     /// - Cannot authenticate with Tor
     /// - Cannot create the hidden service
-    pub async fn build(self) -> Result<Arc<TorUserTransport>, BuildError> {
-        let local_id = self.secret_key.public();
+    pub async fn build(self, secret_key: SecretKey) -> Result<Arc<TorUserTransport>, BuildError> {
+        let local_id = secret_key.public();
 
         #[cfg(test)]
         if let Some(io) = self.io {
@@ -443,7 +446,7 @@ impl TorUserTransportBuilder {
         let mut conn: AuthenticatedConn<TcpStream, EventHandler> = conn.into_authenticated().await;
 
         // Create the hidden service
-        let tor_key = iroh_to_tor_secret_key(&self.secret_key);
+        let tor_key = iroh_to_tor_secret_key(&secret_key);
         let onion_addr = tor_key.public().get_onion_address();
         let listeners = [(self.onion_port, local_addr)];
         match conn
@@ -525,13 +528,8 @@ pub struct TorUserTransport {
 
 impl TorUserTransport {
     /// Create a builder for configuring a Tor user transport.
-    ///
-    /// # Arguments
-    ///
-    /// * `secret_key` - The iroh secret key for this endpoint
-    pub fn builder(secret_key: SecretKey) -> TorUserTransportBuilder {
+    pub fn builder() -> TorUserTransportBuilder {
         TorUserTransportBuilder {
-            secret_key,
             socks_port: DEFAULT_SOCKS_PORT,
             control_port: DEFAULT_CONTROL_PORT,
             onion_port: DEFAULT_ONION_PORT,

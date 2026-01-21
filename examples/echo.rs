@@ -116,8 +116,8 @@ async fn main() -> Result<()> {
     }
 
     // Build the transport - this creates the hidden service automatically
-    let transport = TorUserTransport::builder(secret.clone())
-        .build()
+    let transport = TorUserTransport::builder()
+        .build(secret.clone())
         .await
         .context("Failed to create Tor transport. Is Tor running with ControlPort 9051?")?;
 

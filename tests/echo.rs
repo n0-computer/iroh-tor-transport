@@ -469,12 +469,12 @@ async fn test_user_transport_roundtrip_tor() -> Result<()> {
     let id2 = sk2.public();
 
     // Build transports using the real Tor builder (creates hidden services)
-    let transport1 = TorUserTransport::builder(sk1.clone())
-        .build()
+    let transport1 = TorUserTransport::builder()
+        .build(sk1.clone())
         .await
         .context("Failed to create transport1. Is Tor running with ControlPort 9051?")?;
-    let transport2 = TorUserTransport::builder(sk2.clone())
-        .build()
+    let transport2 = TorUserTransport::builder()
+        .build(sk2.clone())
         .await
         .context("Failed to create transport2")?;
 

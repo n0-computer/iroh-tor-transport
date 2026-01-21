@@ -32,8 +32,8 @@ use iroh_tor::TorUserTransport;
 let secret_key = SecretKey::generate(&mut rand::rng());
 
 // Build the transport (creates hidden service)
-let transport = TorUserTransport::builder(secret_key.clone())
-    .build()
+let transport = TorUserTransport::builder()
+    .build(secret_key.clone())
     .await?;
 
 // Build the endpoint with the Tor transport

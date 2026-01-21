@@ -44,7 +44,7 @@ fn init_tracing() {
 }
 
 async fn setup_endpoint(sk: SecretKey, io: Arc<TorStreamIo>) -> Result<Endpoint> {
-    let transport = TorUserTransport::builder(sk.clone()).io(io).build().await?;
+    let transport = TorUserTransport::builder().io(io).build(sk.clone()).await?;
     Ok(Endpoint::builder()
         .secret_key(sk)
         .clear_ip_transports()
