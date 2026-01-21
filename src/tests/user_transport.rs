@@ -53,14 +53,15 @@ async fn setup_endpoint(
     use_user_discovery: bool,
 ) -> Result<Endpoint> {
     let transport = TorUserTransport::builder(sk.public(), io).build();
+    let discovery = transport.discovery();
     let mut builder = Endpoint::builder()
         .secret_key(sk.clone())
-        .add_user_transport(transport.factory())
+        .add_user_transport(Arc::new(transport))
         .clear_ip_transports()
         .clear_relay_transports()
         .clear_discovery();
     if use_user_discovery {
-        builder = builder.discovery(transport.discovery());
+        builder = builder.discovery(discovery);
     }
     Ok(builder.bind().await?)
 }
