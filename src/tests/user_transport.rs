@@ -8,14 +8,15 @@ use anyhow::{Context, Result};
 use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, EndpointAddr, SecretKey, TransportAddr};
-use iroh_tor::{
-    DEFAULT_CONTROL_PORT, DEFAULT_SOCKS_PORT, TorControl, TorStreamIo, TorUserAddrDiscovery,
-    TorUserTransportFactory, iroh_to_tor_secret_key, tor_user_addr,
-};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio_socks::tcp::Socks5Stream;
 use tracing::info;
+
+use crate::{
+    DEFAULT_CONTROL_PORT, DEFAULT_SOCKS_PORT, TorControl, TorStreamIo, TorUserAddrDiscovery,
+    TorUserTransportFactory, iroh_to_tor_secret_key, tor_user_addr,
+};
 
 const ALPN: &[u8] = b"iroh-tor/user-transport/0";
 

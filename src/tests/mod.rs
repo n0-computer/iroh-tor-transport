@@ -1,5 +1,7 @@
 //! Internal tests for packet protocol and sender.
 
+mod user_transport;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -12,8 +14,14 @@ use tokio::sync::mpsc;
 
 use crate::{
     TorPacket, TorPacketSender, TorPacketService, TorStreamIo, iroh_to_tor_secret_key,
-    onion_address, read_tor_packet, write_tor_packet,
+    read_tor_packet, write_tor_packet,
 };
+
+/// Get the onion address for an iroh SecretKey (test helper).
+fn onion_address(key: &SecretKey) -> torut::onion::OnionAddressV3 {
+    let tor_key = iroh_to_tor_secret_key(key);
+    tor_key.public().get_onion_address()
+}
 
 #[tokio::test]
 async fn test_packet_service_roundtrip() -> Result<()> {

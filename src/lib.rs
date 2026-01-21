@@ -69,12 +69,6 @@ pub fn generate_tor_key() -> TorSecretKeyV3 {
     TorSecretKeyV3::generate()
 }
 
-/// Get the onion address for an iroh SecretKey.
-pub fn onion_address(key: &SecretKey) -> OnionAddressV3 {
-    let tor_key = iroh_to_tor_secret_key(key);
-    tor_key.public().get_onion_address()
-}
-
 /// Get the onion address for an iroh `EndpointId` (public key only).
 pub fn onion_address_from_endpoint(endpoint: EndpointId) -> Result<OnionAddressV3> {
     let bytes = endpoint.as_bytes();
@@ -110,7 +104,7 @@ pub(crate) struct TorPacket {
 
 const FLAG_SEGMENT_SIZE: u8 = 0x01;
 /// Transport id for the Tor user transport.
-pub const TOR_USER_TRANSPORT_ID: u64 = 0x544f52;
+const TOR_USER_TRANSPORT_ID: u64 = 0x544f52;
 
 /// Build a user transport address for the Tor transport.
 pub fn tor_user_addr(endpoint: EndpointId) -> UserAddr {
@@ -405,7 +399,7 @@ impl UserTransportFactory for TorUserTransportFactory {
 }
 
 /// A user transport that sends/receives `TorPacket`s over Tor streams.
-pub struct TorUserTransport {
+struct TorUserTransport {
     local_id: EndpointId,
     watchable: Watchable<Vec<UserAddr>>,
     receiver: tokio::sync::mpsc::Receiver<TorPacket>,
