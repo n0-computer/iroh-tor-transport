@@ -7,7 +7,6 @@ edition = "2024"
 torut = "0.2"
 tokio = { version = "1", features = ["full"] }
 iroh = { git = "https://github.com/n0-computer/iroh", branch = "feat-user-transport-2" }
-anyhow = "1"
 n0-error = "0.1"
 bytes = "1"
 iroh-base = { git = "https://github.com/n0-computer/iroh", branch = "feat-user-transport-2", package = "iroh-base" }
@@ -24,4 +23,5 @@ sha2 = "0.10"
 tokio-socks = "0.5"
 
 [dev-dependencies]
+anyhow = "1"
 tokio-test = "0.4"

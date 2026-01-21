@@ -89,9 +89,7 @@ async fn test_sender_reuses_connection() -> Result<()> {
 
     let connects = Arc::new(AtomicUsize::new(0));
     let io = Arc::new(TorStreamIo::new(
-        || async {
-            Err(std::io::Error::other("accept not used in this test"))
-        },
+        || async { Err(std::io::Error::other("accept not used in this test")) },
         {
             let connects = connects.clone();
             move |_endpoint| {

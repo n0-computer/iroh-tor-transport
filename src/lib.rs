@@ -5,8 +5,6 @@
 
 use std::{collections::HashMap, future::Future, io, pin::Pin, sync::Arc};
 
-use anyhow::{Context, Result, anyhow};
-use n0_error::{e, stack_error};
 use bytes::Bytes;
 use iroh::{
     EndpointId, SecretKey, TransportAddr,
@@ -18,6 +16,7 @@ use iroh::{
     },
 };
 use iroh_base::UserAddr;
+use n0_error::{e, stack_error};
 use n0_future::{boxed::BoxFuture, stream};
 use n0_watcher::Watchable;
 use sha2::{Digest, Sha512};
@@ -136,29 +135,28 @@ impl Discovery for TorUserAddrDiscovery {
     }
 }
 
-fn parse_user_addr(addr: &UserAddr) -> Result<EndpointId> {
+fn parse_user_addr(addr: &UserAddr) -> io::Result<EndpointId> {
     if addr.id() != TOR_USER_TRANSPORT_ID {
-        return Err(anyhow!("unexpected transport id"));
+        return Err(io::Error::other("unexpected transport id"));
     }
     let data = addr.data();
     if data.len() != 32 {
-        return Err(anyhow!("unexpected endpoint id length"));
+        return Err(io::Error::other("unexpected endpoint id length"));
     }
-    let bytes: [u8; 32] = data.try_into().context("endpoint id bytes")?;
-    EndpointId::from_bytes(&bytes).context("endpoint id parse")
+    let bytes: [u8; 32] = data
+        .try_into()
+        .map_err(|_| io::Error::other("endpoint id bytes"))?;
+    EndpointId::from_bytes(&bytes).map_err(io::Error::other)
 }
 
 /// Read a single packet from a stream. Returns `Ok(None)` on clean EOF.
 pub(crate) async fn read_tor_packet<R: AsyncRead + Unpin>(
     reader: &mut R,
-) -> Result<Option<TorPacket>> {
+) -> io::Result<Option<TorPacket>> {
     let mut flags = [0u8; 1];
     let mut read = 0usize;
     while read < flags.len() {
-        let n = reader
-            .read(&mut flags[read..])
-            .await
-            .context("Failed to read packet flags")?;
+        let n = reader.read(&mut flags[read..]).await?;
         if n == 0 {
             return Ok(None);
         }
@@ -166,36 +164,24 @@ pub(crate) async fn read_tor_packet<R: AsyncRead + Unpin>(
     }
 
     let mut from_bytes = [0u8; 32];
-    reader
-        .read_exact(&mut from_bytes)
-        .await
-        .context("Failed to read packet source")?;
-    let from =
-        EndpointId::from_bytes(&from_bytes).context("Failed to parse packet source EndpointId")?;
+    reader.read_exact(&mut from_bytes).await?;
+    let from = EndpointId::from_bytes(&from_bytes)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     let segment_size = if flags[0] & FLAG_SEGMENT_SIZE != 0 {
         let mut size_bytes = [0u8; 2];
-        reader
-            .read_exact(&mut size_bytes)
-            .await
-            .context("Failed to read segment size")?;
+        reader.read_exact(&mut size_bytes).await?;
         Some(u16::from_be_bytes(size_bytes))
     } else {
         None
     };
 
     let mut len_bytes = [0u8; 4];
-    reader
-        .read_exact(&mut len_bytes)
-        .await
-        .context("Failed to read data length")?;
+    reader.read_exact(&mut len_bytes).await?;
     let len = u32::from_be_bytes(len_bytes) as usize;
 
     let mut data = vec![0u8; len];
-    reader
-        .read_exact(&mut data)
-        .await
-        .context("Failed to read packet data")?;
+    reader.read_exact(&mut data).await?;
 
     Ok(Some(TorPacket {
         from,
@@ -208,35 +194,21 @@ pub(crate) async fn read_tor_packet<R: AsyncRead + Unpin>(
 pub(crate) async fn write_tor_packet<W: AsyncWrite + Unpin>(
     writer: &mut W,
     packet: &TorPacket,
-) -> Result<()> {
+) -> io::Result<()> {
     let mut flags = 0u8;
     if packet.segment_size.is_some() {
         flags |= FLAG_SEGMENT_SIZE;
     }
-    writer
-        .write_all(&[flags])
-        .await
-        .context("Failed to write packet flags")?;
-    writer
-        .write_all(packet.from.as_bytes())
-        .await
-        .context("Failed to write packet source")?;
+    writer.write_all(&[flags]).await?;
+    writer.write_all(packet.from.as_bytes()).await?;
     if let Some(segment_size) = packet.segment_size {
-        writer
-            .write_all(&segment_size.to_be_bytes())
-            .await
-            .context("Failed to write segment size")?;
+        writer.write_all(&segment_size.to_be_bytes()).await?;
     }
-    let len = u32::try_from(packet.data.len()).context("Packet too large to encode")?;
-    writer
-        .write_all(&len.to_be_bytes())
-        .await
-        .context("Failed to write data length")?;
-    writer
-        .write_all(&packet.data)
-        .await
-        .context("Failed to write packet data")?;
-    writer.flush().await.context("Failed to flush packet")?;
+    let len = u32::try_from(packet.data.len())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "packet too large"))?;
+    writer.write_all(&len.to_be_bytes()).await?;
+    writer.write_all(&packet.data).await?;
+    writer.flush().await?;
     Ok(())
 }
 
@@ -253,7 +225,7 @@ impl TorPacketService {
     }
 
     /// Handle packets on a single stream until EOF.
-    pub(crate) async fn handle_stream(&self, mut stream: TcpStream) -> Result<()> {
+    pub(crate) async fn handle_stream(&self, mut stream: TcpStream) -> io::Result<()> {
         while let Some(packet) = read_tor_packet(&mut stream).await? {
             let _ = self.sender.send(packet).await;
         }
@@ -312,7 +284,7 @@ impl TorPacketSender {
     }
 
     /// Send a packet to the given endpoint, reusing an existing stream when available.
-    pub(crate) async fn send(&self, to: EndpointId, packet: &TorPacket) -> Result<()> {
+    pub(crate) async fn send(&self, to: EndpointId, packet: &TorPacket) -> io::Result<()> {
         let stream = self.get_or_connect(to).await?;
         let mut guard = stream.lock().await;
         match write_tor_packet(&mut *guard, packet).await {
@@ -325,7 +297,7 @@ impl TorPacketSender {
         }
     }
 
-    async fn get_or_connect(&self, to: EndpointId) -> Result<Arc<Mutex<TcpStream>>> {
+    async fn get_or_connect(&self, to: EndpointId) -> io::Result<Arc<Mutex<TcpStream>>> {
         if let Some(existing) = self.streams.lock().await.get(&to).cloned() {
             return Ok(existing);
         }
@@ -339,28 +311,22 @@ impl TorPacketSender {
 
     /// Close and remove a cached stream for the given endpoint.
     #[allow(dead_code)]
-    pub(crate) async fn close(&self, to: EndpointId) -> Result<()> {
+    pub(crate) async fn close(&self, to: EndpointId) -> io::Result<()> {
         let stream = self.streams.lock().await.remove(&to);
         if let Some(stream) = stream {
             let mut guard = stream.lock().await;
-            guard
-                .shutdown()
-                .await
-                .context("Failed to shutdown stream")?;
+            guard.shutdown().await?;
         }
         Ok(())
     }
 
     /// Close and remove all cached streams.
     #[allow(dead_code)]
-    pub(crate) async fn close_all(&self) -> Result<()> {
+    pub(crate) async fn close_all(&self) -> io::Result<()> {
         let streams: Vec<_> = self.streams.lock().await.drain().map(|(_, v)| v).collect();
         for stream in streams {
             let mut guard = stream.lock().await;
-            guard
-                .shutdown()
-                .await
-                .context("Failed to shutdown stream")?;
+            guard.shutdown().await?;
         }
         Ok(())
     }
@@ -506,10 +472,9 @@ impl TorUserTransportBuilder {
                     io::Error::new(io::ErrorKind::InvalidData, "invalid endpoint id")
                 })?;
                 let onion_addr = format!("{}.onion", onion.get_address_without_dot_onion());
-                let stream =
-                    Socks5Stream::connect(socks_addr, (onion_addr.as_str(), onion_port))
-                        .await
-                        .map_err(io::Error::other)?;
+                let stream = Socks5Stream::connect(socks_addr, (onion_addr.as_str(), onion_port))
+                    .await
+                    .map_err(io::Error::other)?;
                 Ok(stream.into_inner())
             },
         ));
@@ -700,9 +665,7 @@ impl UserSender for TorUserSender {
         let to = parse_user_addr(&dst).map_err(io::Error::other)?;
         let segment_size = transmit
             .segment_size
-            .map(|size| {
-                u16::try_from(size).map_err(|_| io::Error::other("segment size too large"))
-            })
+            .map(|size| u16::try_from(size).map_err(|_| io::Error::other("segment size too large")))
             .transpose()?;
         let chunk_size = segment_size
             .map(|s| s as usize)
@@ -758,9 +721,7 @@ impl UserEndpoint for TorUserEndpoint {
                     break;
                 }
                 std::task::Poll::Ready(None) => {
-                    return std::task::Poll::Ready(Err(io::Error::other(
-                        "packet channel closed",
-                    )));
+                    return std::task::Poll::Ready(Err(io::Error::other("packet channel closed")));
                 }
                 std::task::Poll::Ready(Some(packet)) => {
                     if bufs[filled].len() < packet.data.len() {
