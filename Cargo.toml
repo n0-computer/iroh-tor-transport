@@ -20,7 +20,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ed25519-dalek = { version = "2", features = ["hazmat"] }
 rand = "0.9"
 sha2 = "0.10"
+tokio-socks = "0.5"
 
 [dev-dependencies]
 tokio-test = "0.4"
-tokio-socks = "0.5"

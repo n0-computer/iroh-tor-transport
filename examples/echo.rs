@@ -1,3 +1,8 @@
+//! Example echo server/client using iroh over Tor hidden services.
+//!
+//! This example demonstrates how to use `iroh-tor` for bidirectional communication
+//! over Tor. It requires a running Tor daemon with ControlPort enabled.
+
 use std::{env, net::SocketAddr, str::FromStr, sync::Arc};
 
 use anyhow::{Context, Result};
@@ -8,18 +13,91 @@ use iroh::{
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler, Router},
 };
-use iroh_tor::{
-    DEFAULT_CONTROL_PORT, DEFAULT_SOCKS_PORT, TorControl, TorStreamIo, TorUserTransport,
-    iroh_to_tor_secret_key, onion_address_from_endpoint, tor_user_addr,
-};
+use iroh_base::UserAddr;
+use iroh_tor::TorUserTransport;
+use sha2::{Digest, Sha512};
 use tokio::{
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
     time::{sleep, timeout},
 };
-use tokio_socks::tcp::Socks5Stream;
+use torut::{
+    control::{AuthenticatedConn, ConnError, UnauthenticatedConn},
+    onion::{OnionAddressV3, TorSecretKeyV3},
+};
 
 const ALPN: &[u8] = b"iroh-tor/user-transport/0";
 const ONION_PORT: u16 = 9999;
+const TOR_USER_TRANSPORT_ID: u64 = 0x544f52;
+
+/// Convert an iroh SecretKey to a Tor v3 secret key.
+fn iroh_to_tor_secret_key(key: &SecretKey) -> TorSecretKeyV3 {
+    let seed = key.to_bytes();
+    let hash = Sha512::digest(seed);
+    let mut expanded_bytes: [u8; 64] = hash.into();
+    expanded_bytes[0] &= 248;
+    expanded_bytes[31] &= 63;
+    expanded_bytes[31] |= 64;
+    TorSecretKeyV3::from(expanded_bytes)
+}
+
+/// Build a user transport address for the Tor transport.
+fn tor_user_addr(endpoint: EndpointId) -> UserAddr {
+    UserAddr::from_parts(TOR_USER_TRANSPORT_ID, endpoint.as_bytes())
+}
+
+type EventHandler = Box<
+    dyn Fn(
+            torut::control::AsyncEvent<'static>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ConnError>> + Send>>
+        + Send
+        + Sync,
+>;
+
+struct TorControl {
+    conn: AuthenticatedConn<TcpStream, EventHandler>,
+}
+
+impl TorControl {
+    async fn connect(addr: &str) -> Result<Self> {
+        let stream = TcpStream::connect(addr)
+            .await
+            .context("Failed to connect to Tor control port")?;
+        let mut conn = UnauthenticatedConn::new(stream);
+        let auth_data = conn
+            .load_protocol_info()
+            .await
+            .context("Failed to load protocol info")?;
+        let auth_method = auth_data
+            .make_auth_data()
+            .context("Failed to determine auth method")?;
+        if let Some(auth) = auth_method {
+            conn.authenticate(&auth)
+                .await
+                .context("Failed to authenticate")?;
+        }
+        let conn: AuthenticatedConn<TcpStream, EventHandler> = conn.into_authenticated().await;
+        Ok(Self { conn })
+    }
+
+    async fn create_hidden_service_with_tor_key(
+        &mut self,
+        tor_key: &TorSecretKeyV3,
+        onion_port: u16,
+        local_addr: SocketAddr,
+    ) -> Result<(OnionAddressV3, bool)> {
+        let onion_addr = tor_key.public().get_onion_address();
+        let listeners = [(onion_port, local_addr)];
+        match self
+            .conn
+            .add_onion_v3(tor_key, false, false, false, None, &mut listeners.iter())
+            .await
+        {
+            Ok(()) => Ok((onion_addr, false)),
+            Err(ConnError::InvalidResponseCode(552)) => Ok((onion_addr, true)),
+            Err(e) => Err(e).context("Failed to create hidden service"),
+        }
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -84,34 +162,13 @@ fn load_secret() -> Result<(SecretKey, Option<String>)> {
     }
 }
 
-async fn build_tor_io(listener: TcpListener, socks_addr: SocketAddr) -> Arc<TorStreamIo> {
-    Arc::new(TorStreamIo::new(
-        {
-            let listener = Arc::new(listener);
-            move || {
-                let listener = listener.clone();
-                async move {
-                    let (stream, _) = listener.accept().await?;
-                    Ok(stream)
-                }
-            }
-        },
-        {
-            move |endpoint| async move {
-                let onion = onion_address_from_endpoint(endpoint)?;
-                let onion_addr = format!("{}.onion", onion.get_address_without_dot_onion());
-                let stream =
-                    Socks5Stream::connect(socks_addr, (onion_addr.as_str(), ONION_PORT)).await?;
-                Ok(stream.into_inner())
-            }
-        },
-    ))
-}
-
-async fn setup_endpoint(sk: &SecretKey, io: Arc<TorStreamIo>) -> Result<Endpoint> {
-    let transport = TorUserTransport::builder(sk.public(), io).build();
+async fn setup_endpoint(sk: SecretKey, listener: TcpListener) -> Result<Endpoint> {
+    let transport = TorUserTransport::builder(sk.clone())
+        .listener(listener)
+        .build()
+        .await;
     Ok(Endpoint::builder()
-        .secret_key(sk.clone())
+        .secret_key(sk)
         .preset(transport.preset())
         .clear_ip_transports()
         .clear_relay_transports()
@@ -150,11 +207,10 @@ async fn main() -> Result<()> {
     let (secret, secret_hint) = load_secret()?;
     let endpoint_id = secret.public();
 
-    let control_addr = format!("127.0.0.1:{}", DEFAULT_CONTROL_PORT);
-    let mut tor_control = TorControl::connect(&control_addr).await.context(
+    let control_addr = "127.0.0.1:9051";
+    let mut tor_control = TorControl::connect(control_addr).await.context(
         "Tor control port unavailable. Start Tor with ControlPort 9051 enabled and try again.",
     )?;
-    let socks_addr: SocketAddr = format!("127.0.0.1:{}", DEFAULT_SOCKS_PORT).parse()?;
 
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let local_addr = listener.local_addr()?;
@@ -169,8 +225,7 @@ async fn main() -> Result<()> {
     }
     println!("Onion: {}.onion", onion.get_address_without_dot_onion());
 
-    let io = build_tor_io(listener, socks_addr).await;
-    let ep = Arc::new(setup_endpoint(&secret, io).await?);
+    let ep = Arc::new(setup_endpoint(secret.clone(), listener).await?);
 
     let ep_accept = ep.clone();
     if matches!(cli.command, Command::Accept) {

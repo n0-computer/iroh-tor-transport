@@ -7,17 +7,117 @@ use std::{io, net::SocketAddr, sync::Once, time::Duration};
 
 use anyhow::{Context, Result};
 use iroh::SecretKey;
-use iroh_tor::{
-    DEFAULT_CONTROL_PORT, DEFAULT_SOCKS_PORT, TorControl, TorSecretKeyV3, generate_tor_key,
-    iroh_to_tor_secret_key,
-};
+use sha2::{Digest, Sha512};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     time::{Instant, timeout},
 };
 use tokio_socks::tcp::Socks5Stream;
+use torut::{
+    control::{AuthenticatedConn, ConnError, UnauthenticatedConn},
+    onion::{OnionAddressV3, TorSecretKeyV3},
+};
 use tracing::{error, info, warn};
+
+/// Convert an iroh SecretKey to a Tor v3 secret key.
+fn iroh_to_tor_secret_key(key: &SecretKey) -> TorSecretKeyV3 {
+    let seed = key.to_bytes();
+    let hash = Sha512::digest(seed);
+    let mut expanded_bytes: [u8; 64] = hash.into();
+    expanded_bytes[0] &= 248;
+    expanded_bytes[31] &= 63;
+    expanded_bytes[31] |= 64;
+    TorSecretKeyV3::from(expanded_bytes)
+}
+
+type EventHandler = Box<
+    dyn Fn(
+            torut::control::AsyncEvent<'static>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ConnError>> + Send>>
+        + Send
+        + Sync,
+>;
+
+struct TorControl {
+    conn: AuthenticatedConn<TcpStream, EventHandler>,
+}
+
+impl TorControl {
+    async fn connect(addr: &str) -> Result<Self> {
+        let stream = TcpStream::connect(addr)
+            .await
+            .context("Failed to connect to Tor control port")?;
+        let mut conn = UnauthenticatedConn::new(stream);
+        let auth_data = conn
+            .load_protocol_info()
+            .await
+            .context("Failed to load protocol info")?;
+        let auth_method = auth_data
+            .make_auth_data()
+            .context("Failed to determine auth method")?;
+        if let Some(auth) = auth_method {
+            conn.authenticate(&auth)
+                .await
+                .context("Failed to authenticate")?;
+        }
+        let conn: AuthenticatedConn<TcpStream, EventHandler> = conn.into_authenticated().await;
+        Ok(Self { conn })
+    }
+
+    async fn create_hidden_service_with_tor_key(
+        &mut self,
+        tor_key: &TorSecretKeyV3,
+        onion_port: u16,
+        local_addr: SocketAddr,
+    ) -> Result<(OnionAddressV3, bool)> {
+        let onion_addr = tor_key.public().get_onion_address();
+        let listeners = [(onion_port, local_addr)];
+        match self
+            .conn
+            .add_onion_v3(tor_key, false, false, false, None, &mut listeners.iter())
+            .await
+        {
+            Ok(()) => Ok((onion_addr, false)),
+            Err(ConnError::InvalidResponseCode(552)) => Ok((onion_addr, true)),
+            Err(e) => Err(e).context("Failed to create hidden service"),
+        }
+    }
+
+    async fn list_hidden_services(&mut self) -> Result<Vec<OnionAddressV3>> {
+        let response = self
+            .conn
+            .get_info_unquote("onions/current")
+            .await
+            .context("Failed to query onions/current")?;
+        let mut services = Vec::new();
+        for line in response.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            let addr = std::str::FromStr::from_str(line)
+                .with_context(|| format!("Invalid onion address from Tor: {}", line))?;
+            services.push(addr);
+        }
+        Ok(services)
+    }
+
+    async fn wait_for_hidden_service(
+        &mut self,
+        addr: &OnionAddressV3,
+        timeout: Duration,
+        poll_interval: Duration,
+    ) -> Result<bool> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let services = self.list_hidden_services().await?;
+            if services.iter().any(|service| service == addr) {
+                return Ok(true);
+            }
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
+            tokio::time::sleep(poll_interval).await;
+        }
+    }
+}
 
 const TEST_MESSAGE: &[u8] = b"Hello from Tor hidden service!";
 const HIDDEN_SERVICE_PORT: u16 = 9999;
@@ -33,20 +133,19 @@ fn init_tracing() {
 }
 
 async fn connect_tor_control() -> Result<TorControl> {
-    let control_addr = format!("127.0.0.1:{}", DEFAULT_CONTROL_PORT);
-    TorControl::connect(&control_addr).await.context(
+    TorControl::connect("127.0.0.1:9051").await.context(
         "Tor control port unavailable. Start Tor with ControlPort 9051 enabled and try again.",
     )
 }
 
 /// Connect to a .onion address through the Tor SOCKS5 proxy with retries.
-async fn connect_via_tor(onion_addr: &str, port: u16, timeout: Duration) -> Result<TcpStream> {
-    let socks_addr: SocketAddr = format!("127.0.0.1:{}", DEFAULT_SOCKS_PORT).parse()?;
+async fn connect_via_tor(onion_addr: &str, port: u16, timeout_dur: Duration) -> Result<TcpStream> {
+    let socks_addr: SocketAddr = "127.0.0.1:9050".parse()?;
     let target = (onion_addr, port);
 
     // Retry logic - hidden services can take time to become reachable
     // First-time publish can take 60-120 seconds; subsequent runs are faster
-    let deadline = Instant::now() + timeout;
+    let deadline = Instant::now() + timeout_dur;
     let mut last_error = None;
     let mut attempt = 0usize;
 
@@ -225,7 +324,7 @@ async fn run_hidden_service_echo(tor_key: &TorSecretKeyV3, label: &str) -> Resul
 #[tokio::test]
 #[ignore]
 async fn test_native_tor_key() -> Result<()> {
-    let tor_key = generate_tor_key();
+    let tor_key = TorSecretKeyV3::generate();
     run_hidden_service_echo(&tor_key, "native tor key").await
 }
 
@@ -243,7 +342,7 @@ async fn test_iroh_key_converted_to_tor() -> Result<()> {
 async fn test_echo_latency_10x_single_service() -> Result<()> {
     init_tracing();
 
-    let tor_key = generate_tor_key();
+    let tor_key = TorSecretKeyV3::generate();
     let onion_addr = tor_key.public().get_onion_address();
     info!("Generated onion (latency test): {}", onion_addr);
 

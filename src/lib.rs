@@ -3,14 +3,7 @@
 //! This crate provides utilities for creating Tor hidden services that can be used
 //! as a custom transport for iroh networking.
 
-use std::{
-    collections::HashMap,
-    future::Future,
-    pin::Pin,
-    str::FromStr,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{collections::HashMap, future::Future, sync::Arc};
 
 use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
@@ -26,77 +19,36 @@ use iroh::{
 use iroh_base::UserAddr;
 use n0_future::{boxed::BoxFuture, stream};
 use n0_watcher::Watchable;
+#[cfg(test)]
 use sha2::{Digest, Sha512};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
     sync::Mutex,
-    time::sleep,
 };
-// Re-export TorSecretKeyV3 for users who want to use native Tor keys
-pub use torut::onion::TorSecretKeyV3;
-use torut::{
-    control::{AuthenticatedConn, ConnError, UnauthenticatedConn},
-    onion::{OnionAddressV3, TorPublicKeyV3},
-};
-
-/// Default Tor control port
-pub const DEFAULT_CONTROL_PORT: u16 = 9051;
-
-/// Default Tor SOCKS5 proxy port
-pub const DEFAULT_SOCKS_PORT: u16 = 9050;
+use tokio_socks::tcp::Socks5Stream;
+use torut::onion::{OnionAddressV3, TorPublicKeyV3};
+#[cfg(test)]
+use torut::onion::TorSecretKeyV3;
 
 /// Convert an iroh SecretKey to a Tor v3 secret key.
-///
-/// Iroh uses standard Ed25519 32-byte secret keys (seeds), while Tor uses
-/// 64-byte "expanded" secret keys. This function performs the expansion
-/// using SHA-512 as specified in RFC 8032.
-///
-/// Note: torut uses ed25519-dalek 1.x internally. We generate the expanded
-/// key format that torut expects by using its internal ed25519-dalek types.
-pub fn iroh_to_tor_secret_key(key: &SecretKey) -> TorSecretKeyV3 {
-    // Get the 32-byte seed from iroh's SecretKey
+#[cfg(test)]
+pub(crate) fn iroh_to_tor_secret_key(key: &SecretKey) -> TorSecretKeyV3 {
     let seed = key.to_bytes();
-
-    // Use SHA-512 expansion and Ed25519 clamping for the scalar.
-    // Tor expects an expanded secret key (scalar + nonce) in ed25519-dalek 1.x format.
     let hash = Sha512::digest(seed);
     let mut expanded_bytes: [u8; 64] = hash.into();
-    // Clamp per RFC 8032.
     expanded_bytes[0] &= 248;
     expanded_bytes[31] &= 63;
     expanded_bytes[31] |= 64;
-
-    // TorSecretKeyV3::from expects a 64-byte array
     TorSecretKeyV3::from(expanded_bytes)
 }
 
-/// Generate a new Tor secret key using torut's native key generation.
-/// This is useful for testing that the basic mechanism works.
-pub fn generate_tor_key() -> TorSecretKeyV3 {
-    TorSecretKeyV3::generate()
-}
-
 /// Get the onion address for an iroh `EndpointId` (public key only).
-pub fn onion_address_from_endpoint(endpoint: EndpointId) -> Result<OnionAddressV3> {
+fn onion_address_from_endpoint(endpoint: EndpointId) -> Result<OnionAddressV3> {
     let bytes = endpoint.as_bytes();
     let tor_public =
         TorPublicKeyV3::from_bytes(bytes).context("Invalid endpoint public key for Tor")?;
     Ok(tor_public.get_onion_address())
-}
-
-/// Type alias for the async event handler function.
-type EventHandler = Box<
-    dyn Fn(
-            torut::control::AsyncEvent<'static>,
-        ) -> Pin<Box<dyn Future<Output = Result<(), ConnError>> + Send>>
-        + Send
-        + Sync,
->;
-
-/// A connection to the Tor control port.
-pub struct TorControl {
-    conn: AuthenticatedConn<TcpStream, EventHandler>,
 }
 
 /// A packet carried over the Tor stream transport.
@@ -115,7 +67,7 @@ const FLAG_SEGMENT_SIZE: u8 = 0x01;
 const TOR_USER_TRANSPORT_ID: u64 = 0x544f52;
 
 /// Build a user transport address for the Tor transport.
-pub fn tor_user_addr(endpoint: EndpointId) -> UserAddr {
+fn tor_user_addr(endpoint: EndpointId) -> UserAddr {
     UserAddr::from_parts(TOR_USER_TRANSPORT_ID, endpoint.as_bytes())
 }
 
@@ -265,16 +217,15 @@ impl TorPacketService {
     }
 }
 
-/// Connector for establishing Tor-backed streams keyed by endpoint id.
 /// IO for Tor-backed streams.
-pub struct TorStreamIo {
+pub(crate) struct TorStreamIo {
     accept: Box<dyn Fn() -> BoxFuture<Result<TcpStream>> + Send + Sync>,
     connect: Box<dyn Fn(EndpointId) -> BoxFuture<Result<TcpStream>> + Send + Sync>,
 }
 
 impl TorStreamIo {
     /// Create a new IO wrapper from accept/connect functions.
-    pub fn new<Accept, Connect, AcceptFut, ConnectFut>(accept: Accept, connect: Connect) -> Self
+    pub(crate) fn new<Accept, Connect, AcceptFut, ConnectFut>(accept: Accept, connect: Connect) -> Self
     where
         Accept: Fn() -> AcceptFut + Send + Sync + 'static,
         AcceptFut: Future<Output = Result<TcpStream>> + Send + 'static,
@@ -288,12 +239,12 @@ impl TorStreamIo {
     }
 
     /// Connect to the remote endpoint's stream transport.
-    pub fn connect(&self, endpoint: EndpointId) -> BoxFuture<Result<TcpStream>> {
+    fn connect(&self, endpoint: EndpointId) -> BoxFuture<Result<TcpStream>> {
         (self.connect)(endpoint)
     }
 
     /// Accept the next incoming stream.
-    pub fn accept(&self) -> BoxFuture<Result<TcpStream>> {
+    fn accept(&self) -> BoxFuture<Result<TcpStream>> {
         (self.accept)()
     }
 }
@@ -369,23 +320,100 @@ impl TorPacketSender {
 }
 
 const DEFAULT_RECV_CAPACITY: usize = 64 * 1024;
+const DEFAULT_SOCKS_PORT: u16 = 9050;
+const DEFAULT_ONION_PORT: u16 = 9999;
 
 /// Builder for [`TorUserTransport`].
 pub struct TorUserTransportBuilder {
-    local_id: EndpointId,
-    io: Arc<TorStreamIo>,
+    secret_key: SecretKey,
+    socks_port: u16,
+    onion_port: u16,
     recv_capacity: usize,
+    #[cfg(test)]
+    io: Option<Arc<TorStreamIo>>,
+    listener: Option<Arc<tokio::net::TcpListener>>,
 }
 
 impl TorUserTransportBuilder {
+    /// Set the SOCKS5 proxy port (default: 9050).
+    pub fn socks_port(mut self, port: u16) -> Self {
+        self.socks_port = port;
+        self
+    }
+
+    /// Set the onion service port (default: 9999).
+    pub fn onion_port(mut self, port: u16) -> Self {
+        self.onion_port = port;
+        self
+    }
+
+    /// Set the receive buffer capacity (default: 64KB).
+    pub fn recv_capacity(mut self, capacity: usize) -> Self {
+        self.recv_capacity = capacity;
+        self
+    }
+
+    /// Provide a pre-bound TCP listener instead of binding one automatically.
+    pub fn listener(mut self, listener: tokio::net::TcpListener) -> Self {
+        self.listener = Some(Arc::new(listener));
+        self
+    }
+
+    /// Override with custom IO (for testing with local TCP instead of Tor).
+    #[cfg(test)]
+    pub(crate) fn io(mut self, io: Arc<TorStreamIo>) -> Self {
+        self.io = Some(io);
+        self
+    }
+
     /// Build the transport.
     ///
     /// This creates an inert transport factory that holds the configuration.
     /// The actual transport instance is created when `bind()` is called.
-    pub fn build(self) -> TorUserTransport {
+    pub async fn build(self) -> TorUserTransport {
+        let local_id = self.secret_key.public();
+
+        #[cfg(test)]
+        if let Some(io) = self.io {
+            return TorUserTransport {
+                local_id,
+                io,
+                recv_capacity: self.recv_capacity,
+            };
+        }
+
+        let listener = match self.listener {
+            Some(l) => l,
+            None => {
+                let l = tokio::net::TcpListener::bind("127.0.0.1:0")
+                    .await
+                    .expect("failed to bind listener");
+                Arc::new(l)
+            }
+        };
+        let socks_addr: std::net::SocketAddr =
+            format!("127.0.0.1:{}", self.socks_port).parse().unwrap();
+        let onion_port = self.onion_port;
+        let io = Arc::new(TorStreamIo::new(
+            move || {
+                let listener = listener.clone();
+                async move {
+                    let (stream, _) = listener.accept().await?;
+                    Ok(stream)
+                }
+            },
+            move |endpoint| async move {
+                let onion = onion_address_from_endpoint(endpoint)?;
+                let onion_addr = format!("{}.onion", onion.get_address_without_dot_onion());
+                let stream =
+                    Socks5Stream::connect(socks_addr, (onion_addr.as_str(), onion_port)).await?;
+                Ok(stream.into_inner())
+            },
+        ));
+
         TorUserTransport {
-            local_id: self.local_id,
-            io: self.io,
+            local_id,
+            io,
             recv_capacity: self.recv_capacity,
         }
     }
@@ -401,12 +429,13 @@ impl TorUserTransportBuilder {
 /// # Example
 ///
 /// ```ignore
-/// let transport = TorUserTransport::builder(endpoint_id, io).build();
+/// let transport = TorUserTransport::builder(secret_key).build().await;
 ///
 /// Endpoint::builder()
-///     .add_user_transport(Arc::new(transport))
-///     .discovery(TorUserAddrDiscovery)
-///     // ...
+///     .secret_key(secret_key)
+///     .preset(transport.preset())
+///     .bind()
+///     .await?
 /// ```
 pub struct TorUserTransport {
     local_id: EndpointId,
@@ -416,11 +445,19 @@ pub struct TorUserTransport {
 
 impl TorUserTransport {
     /// Create a builder for configuring a Tor user transport.
-    pub fn builder(local_id: EndpointId, io: Arc<TorStreamIo>) -> TorUserTransportBuilder {
+    ///
+    /// # Arguments
+    ///
+    /// * `secret_key` - The iroh secret key for this endpoint
+    pub fn builder(secret_key: SecretKey) -> TorUserTransportBuilder {
         TorUserTransportBuilder {
-            local_id,
-            io,
+            secret_key,
+            socks_port: DEFAULT_SOCKS_PORT,
+            onion_port: DEFAULT_ONION_PORT,
             recv_capacity: DEFAULT_RECV_CAPACITY,
+            #[cfg(test)]
+            io: None,
+            listener: None,
         }
     }
 
@@ -438,8 +475,7 @@ impl TorUserTransport {
     /// # Example
     ///
     /// ```ignore
-    /// let io = Arc::new(TorStreamIo::new(accept_fn, connect_fn));
-    /// let transport = TorUserTransport::builder(sk.public(), io).build();
+    /// let transport = TorUserTransport::builder(sk.clone()).build().await;
     ///
     /// Endpoint::builder()
     ///     .secret_key(sk)
@@ -636,190 +672,6 @@ impl UserTransport for TorUserTransportInstance {
             std::task::Poll::Ready(Ok(filled))
         } else {
             std::task::Poll::Pending
-        }
-    }
-}
-
-impl TorControl {
-    /// Connect to the Tor control port and authenticate.
-    pub async fn connect(addr: &str) -> Result<Self> {
-        let stream = TcpStream::connect(addr)
-            .await
-            .context("Failed to connect to Tor control port")?;
-
-        let mut conn = UnauthenticatedConn::new(stream);
-
-        // Get authentication info
-        let auth_data = conn
-            .load_protocol_info()
-            .await
-            .context("Failed to load protocol info")?;
-
-        // Try to authenticate (cookie auth or null auth)
-        let auth_method = auth_data
-            .make_auth_data()
-            .context("Failed to determine auth method")?;
-
-        if let Some(auth) = auth_method {
-            conn.authenticate(&auth)
-                .await
-                .context("Failed to authenticate")?;
-        }
-
-        let conn: AuthenticatedConn<TcpStream, EventHandler> = conn.into_authenticated().await;
-
-        Ok(Self { conn })
-    }
-
-    /// Create or reuse a hidden service using the given secret key.
-    ///
-    /// The hidden service will forward connections from `onion_port` to `local_addr`.
-    ///
-    /// Returns a tuple of (onion_address, already_existed). If `already_existed` is true,
-    /// the service was already registered with Tor (likely from a previous run with
-    /// deterministic keys), meaning the descriptor is probably already published and
-    /// connections should be fast.
-    ///
-    /// Note: If the service is reused, the port mapping from the original creation
-    /// is kept. The `onion_port` and `local_addr` parameters are only used for new services.
-    pub async fn create_hidden_service(
-        &mut self,
-        key: &SecretKey,
-        onion_port: u16,
-        local_addr: std::net::SocketAddr,
-    ) -> Result<(OnionAddressV3, bool)> {
-        let tor_key = iroh_to_tor_secret_key(key);
-        self.create_hidden_service_with_tor_key(&tor_key, onion_port, local_addr)
-            .await
-    }
-
-    /// Create or reuse a hidden service using a native Tor secret key.
-    /// This is useful for testing or when you have a TorSecretKeyV3 directly.
-    pub async fn create_hidden_service_with_tor_key(
-        &mut self,
-        tor_key: &TorSecretKeyV3,
-        onion_port: u16,
-        local_addr: std::net::SocketAddr,
-    ) -> Result<(OnionAddressV3, bool)> {
-        let onion_addr = tor_key.public().get_onion_address();
-
-        println!(
-            "DEBUG: Creating hidden service {} -> {}:{}",
-            onion_addr.get_address_without_dot_onion(),
-            local_addr,
-            onion_port
-        );
-
-        let listeners = [(onion_port, local_addr)];
-        match self
-            .conn
-            .add_onion_v3(
-                tor_key,
-                false, // detach: false means the service will be removed when we disconnect
-                false, // non_anonymous: false for full anonymity
-                false, // max_streams_close_circuit
-                None,  // max_num_streams
-                &mut listeners.iter(),
-            )
-            .await
-        {
-            Ok(()) => {
-                println!("DEBUG: add_onion_v3 returned Ok");
-                Ok((onion_addr, false))
-            }
-            Err(e) => {
-                println!("DEBUG: add_onion_v3 returned Err: {:?}", e);
-                // Check if this is a "key collision" error (service already exists)
-                // torut returns InvalidResponseCode(552) for this case
-                if matches!(e, ConnError::InvalidResponseCode(552)) {
-                    tracing::info!(
-                        "Hidden service {} already exists, reusing it",
-                        onion_addr.get_address_without_dot_onion()
-                    );
-                    Ok((onion_addr, true))
-                } else {
-                    Err(e).context("Failed to create hidden service")
-                }
-            }
-        }
-    }
-
-    /// Wait for hidden service descriptor to be published.
-    ///
-    /// This is a simple delay-based approach. Tor doesn't provide a reliable way
-    /// to query publication status via GETINFO, and torut has a bug that prevents
-    /// subscribing to HS_DESC events (it rejects underscores in event names).
-    ///
-    /// For new services, we wait a fixed amount of time. For production use,
-    /// consider using retry logic when connecting instead.
-    pub async fn wait_for_publication(
-        &mut self,
-        _onion_addr: &OnionAddressV3,
-        _timeout: Duration,
-    ) -> Result<()> {
-        // Just wait a fixed delay for the descriptor to propagate.
-        // The actual time needed varies (30s-120s for first publish, faster with cached keys).
-        // Connection retry logic should handle cases where this isn't enough.
-        println!("Waiting 30s for descriptor to propagate to HSDir nodes...");
-        tokio::time::sleep(Duration::from_secs(30)).await;
-        Ok(())
-    }
-
-    /// Remove a hidden service by its onion address.
-    pub async fn remove_hidden_service(&mut self, addr: &OnionAddressV3) -> Result<()> {
-        // The service_id is the onion address without the .onion suffix
-        let service_id = addr.get_address_without_dot_onion();
-        self.conn
-            .del_onion(&service_id)
-            .await
-            .context("Failed to remove hidden service")?;
-        Ok(())
-    }
-
-    /// List hidden services owned by the current control connection.
-    ///
-    /// This uses the Tor control command `GETINFO onions/current`, which only
-    /// returns services created on this connection and not detached services.
-    pub async fn list_hidden_services(&mut self) -> Result<Vec<OnionAddressV3>> {
-        let response = self.list_hidden_services_raw().await?;
-
-        let mut services = Vec::new();
-        for line in response.lines().map(str::trim).filter(|l| !l.is_empty()) {
-            let addr = OnionAddressV3::from_str(line)
-                .with_context(|| format!("Invalid onion address from Tor: {}", line))?;
-            services.push(addr);
-        }
-
-        Ok(services)
-    }
-
-    /// Return the raw `GETINFO onions/current` response.
-    pub async fn list_hidden_services_raw(&mut self) -> Result<String> {
-        self.conn
-            .get_info_unquote("onions/current")
-            .await
-            .context("Failed to query onions/current")
-    }
-
-    /// Wait until the hidden service shows up in Tor's list for this control connection.
-    ///
-    /// Returns true if the service appears before timeout, false otherwise.
-    pub async fn wait_for_hidden_service(
-        &mut self,
-        addr: &OnionAddressV3,
-        timeout: Duration,
-        poll_interval: Duration,
-    ) -> Result<bool> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            let services = self.list_hidden_services().await?;
-            if services.iter().any(|service| service == addr) {
-                return Ok(true);
-            }
-            if Instant::now() >= deadline {
-                return Ok(false);
-            }
-            sleep(poll_interval).await;
         }
     }
 }
