@@ -27,27 +27,8 @@ jobs:
       - name: Install and configure Tor
         run: |
           sudo apt-get install -y tor
-          # Stop auto-started service and run with our config
           sudo systemctl stop tor
           tor --ControlPort 9051 --CookieAuthentication 0 --RunAsDaemon 1
-          # Wait for control port to be available
-          for i in {1..30}; do
-            if nc -z 127.0.0.1 9051; then
-              echo "Tor control port ready"
-              break
-            fi
-            echo "Waiting for Tor control port... ($i/30)"
-            sleep 1
-          done
-          # Verify SOCKS port too
-          for i in {1..30}; do
-            if nc -z 127.0.0.1 9050; then
-              echo "Tor SOCKS port ready"
-              break
-            fi
-            echo "Waiting for Tor SOCKS port... ($i/30)"
-            sleep 1
-          done
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -67,6 +48,8 @@ jobs:
         run: cargo build --all-targets
 
       - name: Run tests (single-threaded)
-        run: cargo test -- --test-threads=1
+        run: |
+          nc -z 127.0.0.1 9051 && nc -z 127.0.0.1 9050 || { echo "Tor ports not ready"; exit 1; }
+          cargo test -- --test-threads=1
         env:
           RUST_LOG: info
