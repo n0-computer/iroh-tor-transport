@@ -1,15 +1,18 @@
 //! Integration test for the iroh user transport backed by Tor streams.
 
-use std::collections::HashMap;
-use std::net::SocketAddr;
-use std::sync::{Arc, Once};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    sync::{Arc, Once},
+};
 
 use anyhow::{Context, Result};
-use iroh::endpoint::Connection;
-use iroh::protocol::{AcceptError, ProtocolHandler, Router};
-use iroh::{Endpoint, EndpointAddr, SecretKey, TransportAddr};
-use tokio::net::TcpListener;
-use tokio::sync::Mutex;
+use iroh::{
+    Endpoint, EndpointAddr, SecretKey, TransportAddr,
+    endpoint::Connection,
+    protocol::{AcceptError, ProtocolHandler, Router},
+};
+use tokio::{net::TcpListener, sync::Mutex};
 use tokio_socks::tcp::Socks5Stream;
 use tracing::info;
 

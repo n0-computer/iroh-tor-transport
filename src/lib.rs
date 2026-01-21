@@ -17,14 +17,22 @@ use bytes::Bytes;
 use iroh::{
     EndpointId, SecretKey, TransportAddr,
     discovery::{Discovery, DiscoveryError, DiscoveryItem, EndpointData, EndpointInfo},
-    endpoint::transports::{Addr, Transmit, UserSender, UserTransport, UserTransportFactory},
+    endpoint::{
+        Builder,
+        presets::Preset,
+        transports::{Addr, Transmit, UserSender, UserTransport, UserTransportFactory},
+    },
 };
 use iroh_base::UserAddr;
 use n0_future::{boxed::BoxFuture, stream};
 use n0_watcher::Watchable;
 use sha2::{Digest, Sha512};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::{net::TcpStream, sync::Mutex, time::sleep};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    net::TcpStream,
+    sync::Mutex,
+    time::sleep,
+};
 // Re-export TorSecretKeyV3 for users who want to use native Tor keys
 pub use torut::onion::TorSecretKeyV3;
 use torut::{
@@ -453,6 +461,28 @@ impl TorUserTransport {
     pub fn discovery(&self) -> impl Discovery {
         TorUserAddrDiscovery
     }
+
+    /// Returns a preset that configures an endpoint to use this Tor transport.
+    ///
+    /// The preset adds the Tor user transport factory and discovery service.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let io = Arc::new(TorStreamIo::new(accept_fn, connect_fn));
+    /// let transport = TorUserTransport::builder(sk.public(), io).build();
+    ///
+    /// Endpoint::builder()
+    ///     .secret_key(sk)
+    ///     .preset(transport.preset())
+    ///     .bind()
+    ///     .await?
+    /// ```
+    pub fn preset(&self) -> impl Preset {
+        TorPreset {
+            factory: self.factory(),
+        }
+    }
 }
 
 impl std::fmt::Debug for TorUserTransport {
@@ -460,6 +490,19 @@ impl std::fmt::Debug for TorUserTransport {
         f.debug_struct("TorUserTransport")
             .field("local_id", &self.local_id)
             .finish()
+    }
+}
+
+/// Internal preset for configuring an iroh endpoint to use the Tor transport.
+struct TorPreset {
+    factory: Arc<dyn UserTransportFactory>,
+}
+
+impl Preset for TorPreset {
+    fn apply(self, builder: Builder) -> Builder {
+        builder
+            .add_user_transport(self.factory)
+            .discovery(TorUserAddrDiscovery)
     }
 }
 

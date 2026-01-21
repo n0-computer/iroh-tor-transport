@@ -1,20 +1,21 @@
-use std::env;
-use std::net::SocketAddr;
-use std::str::FromStr;
-use std::sync::Arc;
+use std::{env, net::SocketAddr, str::FromStr, sync::Arc};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use data_encoding::HEXLOWER;
-use iroh::endpoint::Connection;
-use iroh::protocol::{AcceptError, ProtocolHandler, Router};
-use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey, TransportAddr};
+use iroh::{
+    Endpoint, EndpointAddr, EndpointId, SecretKey, TransportAddr,
+    endpoint::Connection,
+    protocol::{AcceptError, ProtocolHandler, Router},
+};
 use iroh_tor::{
     DEFAULT_CONTROL_PORT, DEFAULT_SOCKS_PORT, TorControl, TorStreamIo, TorUserTransport,
     iroh_to_tor_secret_key, onion_address_from_endpoint, tor_user_addr,
 };
-use tokio::net::TcpListener;
-use tokio::time::{sleep, timeout};
+use tokio::{
+    net::TcpListener,
+    time::{sleep, timeout},
+};
 use tokio_socks::tcp::Socks5Stream;
 
 const ALPN: &[u8] = b"iroh-tor/user-transport/0";
@@ -111,11 +112,10 @@ async fn setup_endpoint(sk: &SecretKey, io: Arc<TorStreamIo>) -> Result<Endpoint
     let transport = TorUserTransport::builder(sk.public(), io).build();
     Ok(Endpoint::builder()
         .secret_key(sk.clone())
-        .add_user_transport(transport.factory())
+        .preset(transport.preset())
         .clear_ip_transports()
         .clear_relay_transports()
         .clear_discovery()
-        .discovery(transport.discovery())
         .bind()
         .await?)
 }

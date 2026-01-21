@@ -2,15 +2,21 @@
 
 mod user_transport;
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use anyhow::{Result, anyhow};
 use bytes::Bytes;
 use iroh::SecretKey;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::{
+    net::{TcpListener, TcpStream},
+    sync::mpsc,
+};
 
 use crate::{
     TorPacket, TorPacketSender, TorPacketService, TorStreamIo, iroh_to_tor_secret_key,
