@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Tor
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tor
+
+      - name: Start Tor daemon
+        run: |
+          sudo tor --ControlPort 9051 --CookieAuthentication 0 --RunAsDaemon 1
+          # Wait for control port to be available
+          for i in {1..30}; do
+            if nc -z 127.0.0.1 9051; then
+              echo "Tor control port ready"
+              break
+            fi
+            echo "Waiting for Tor control port... ($i/30)"
+            sleep 1
+          done
+          # Verify SOCKS port too
+          for i in {1..30}; do
+            if nc -z 127.0.0.1 9050; then
+              echo "Tor SOCKS port ready"
+              break
+            fi
+            echo "Waiting for Tor SOCKS port... ($i/30)"
+            sleep 1
+          done
+
+      - name: Build
+        run: cargo build --all-targets
+
+      - name: Run tests (single-threaded)
+        run: cargo test -- --test-threads=1
+        env:
+          RUST_LOG: info
