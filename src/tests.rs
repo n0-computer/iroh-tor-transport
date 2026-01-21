@@ -1,4 +1,4 @@
-//! Tests for reusing packet sender connections.
+//! Internal tests for packet protocol and sender.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -7,8 +7,50 @@ use std::time::Duration;
 use anyhow::{Result, anyhow};
 use bytes::Bytes;
 use iroh::SecretKey;
-use iroh_tor::{read_tor_packet, TorPacket, TorPacketSender, TorStreamIo};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::mpsc;
+
+use crate::{
+    iroh_to_tor_secret_key, onion_address, read_tor_packet, write_tor_packet, TorPacket,
+    TorPacketSender, TorPacketService, TorStreamIo,
+};
+
+#[tokio::test]
+async fn test_packet_service_roundtrip() -> Result<()> {
+    let (tx, mut rx) = mpsc::channel::<TorPacket>(1);
+    let service = TorPacketService::new(tx);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let server = tokio::spawn(async move {
+        let (stream, _addr) = listener.accept().await?;
+        service.handle_stream(stream).await
+    });
+
+    let mut client = TcpStream::connect(addr).await?;
+    let from = SecretKey::generate(&mut rand::rng()).public();
+    let packet = TorPacket {
+        from,
+        data: Bytes::from_static(b"hello-tor-packet"),
+        segment_size: Some(512),
+    };
+    write_tor_packet(&mut client, &packet).await?;
+
+    // The service should deliver the packet quickly.
+    let received = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .map_err(|_| anyhow!("Timed out waiting for packet"))?
+        .ok_or_else(|| anyhow!("Packet channel closed"))?;
+
+    assert_eq!(received.from, packet.from);
+    assert_eq!(received.data, packet.data);
+    assert_eq!(received.segment_size, packet.segment_size);
+
+    drop(client);
+
+    server.await??;
+    Ok(())
+}
 
 #[tokio::test]
 async fn test_sender_reuses_connection() -> Result<()> {
@@ -70,4 +112,30 @@ async fn test_sender_reuses_connection() -> Result<()> {
     assert_eq!(connects.load(Ordering::SeqCst), 1, "expected single connection reuse");
 
     Ok(())
+}
+
+#[test]
+fn test_key_conversion() {
+    // Generate an iroh key
+    let iroh_key = SecretKey::generate(&mut rand::rng());
+
+    // Convert to tor key
+    let tor_key = iroh_to_tor_secret_key(&iroh_key);
+
+    // The public keys should match
+    let iroh_public = iroh_key.public();
+    let tor_public = tor_key.public();
+
+    // iroh public key is 32 bytes, tor public key is also 32 bytes
+    assert_eq!(iroh_public.as_bytes(), tor_public.as_bytes());
+}
+
+#[test]
+fn test_onion_address_deterministic() {
+    let iroh_key = SecretKey::generate(&mut rand::rng());
+
+    let addr1 = onion_address(&iroh_key);
+    let addr2 = onion_address(&iroh_key);
+
+    assert_eq!(addr1.to_string(), addr2.to_string());
 }

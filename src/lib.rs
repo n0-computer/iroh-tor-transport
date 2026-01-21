@@ -100,7 +100,7 @@ pub struct TorControl {
 
 /// A packet carried over the Tor stream transport.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TorPacket {
+pub(crate) struct TorPacket {
     /// Source endpoint id (32 bytes).
     pub from: EndpointId,
     /// Raw packet payload.
@@ -152,7 +152,7 @@ fn parse_user_addr(addr: &UserAddr) -> Result<EndpointId> {
 }
 
 /// Read a single packet from a stream. Returns `Ok(None)` on clean EOF.
-pub async fn read_tor_packet<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Option<TorPacket>> {
+pub(crate) async fn read_tor_packet<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Option<TorPacket>> {
     let mut flags = [0u8; 1];
     let mut read = 0usize;
     while read < flags.len() {
@@ -206,7 +206,7 @@ pub async fn read_tor_packet<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Opt
 }
 
 /// Write a single packet to a stream.
-pub async fn write_tor_packet<W: AsyncWrite + Unpin>(writer: &mut W, packet: &TorPacket) -> Result<()> {
+pub(crate) async fn write_tor_packet<W: AsyncWrite + Unpin>(writer: &mut W, packet: &TorPacket) -> Result<()> {
     let mut flags = 0u8;
     if packet.segment_size.is_some() {
         flags |= FLAG_SEGMENT_SIZE;
@@ -241,18 +241,18 @@ pub async fn write_tor_packet<W: AsyncWrite + Unpin>(writer: &mut W, packet: &To
 
 /// A service that reads framed packets from a stream and dispatches them to a channel.
 #[derive(Clone)]
-pub struct TorPacketService {
+pub(crate) struct TorPacketService {
     sender: tokio::sync::mpsc::Sender<TorPacket>,
 }
 
 impl TorPacketService {
     /// Create a new service with the given handler.
-    pub fn new(sender: tokio::sync::mpsc::Sender<TorPacket>) -> Self {
+    pub(crate) fn new(sender: tokio::sync::mpsc::Sender<TorPacket>) -> Self {
         Self { sender }
     }
 
     /// Handle packets on a single stream until EOF.
-    pub async fn handle_stream(&self, mut stream: TcpStream) -> Result<()> {
+    pub(crate) async fn handle_stream(&self, mut stream: TcpStream) -> Result<()> {
         while let Some(packet) = read_tor_packet(&mut stream).await? {
             let _ = self.sender.send(packet).await;
         }
@@ -299,14 +299,14 @@ impl TorStreamIo {
 }
 
 /// Packet writer that reuses per-endpoint streams.
-pub struct TorPacketSender {
+pub(crate) struct TorPacketSender {
     io: Arc<TorStreamIo>,
     streams: Mutex<HashMap<EndpointId, Arc<Mutex<TcpStream>>>>,
 }
 
 impl TorPacketSender {
     /// Create a new sender with the provided connector.
-    pub fn new(io: Arc<TorStreamIo>) -> Self {
+    pub(crate) fn new(io: Arc<TorStreamIo>) -> Self {
         Self {
             io,
             streams: Mutex::new(HashMap::new()),
@@ -314,7 +314,7 @@ impl TorPacketSender {
     }
 
     /// Send a packet to the given endpoint, reusing an existing stream when available.
-    pub async fn send(&self, to: EndpointId, packet: &TorPacket) -> Result<()> {
+    pub(crate) async fn send(&self, to: EndpointId, packet: &TorPacket) -> Result<()> {
         let stream = self.get_or_connect(to).await?;
         let mut guard = stream.lock().await;
         match write_tor_packet(&mut *guard, packet).await {
@@ -340,7 +340,8 @@ impl TorPacketSender {
     }
 
     /// Close and remove a cached stream for the given endpoint.
-    pub async fn close(&self, to: EndpointId) -> Result<()> {
+    #[allow(dead_code)]
+    pub(crate) async fn close(&self, to: EndpointId) -> Result<()> {
         let stream = self.streams.lock().await.remove(&to);
         if let Some(stream) = stream {
             let mut guard = stream.lock().await;
@@ -350,7 +351,8 @@ impl TorPacketSender {
     }
 
     /// Close and remove all cached streams.
-    pub async fn close_all(&self) -> Result<()> {
+    #[allow(dead_code)]
+    pub(crate) async fn close_all(&self) -> Result<()> {
         let streams: Vec<_> = self.streams.lock().await.drain().map(|(_, v)| v).collect();
         for stream in streams {
             let mut guard = stream.lock().await;
@@ -749,32 +751,4 @@ impl TorControl {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_key_conversion() {
-        // Generate an iroh key
-        let iroh_key = SecretKey::generate(&mut rand::rng());
-
-        // Convert to tor key
-        let tor_key = iroh_to_tor_secret_key(&iroh_key);
-
-        // The public keys should match
-        let iroh_public = iroh_key.public();
-        let tor_public = tor_key.public();
-
-        // iroh public key is 32 bytes, tor public key is also 32 bytes
-        assert_eq!(iroh_public.as_bytes(), tor_public.as_bytes());
-    }
-
-    #[test]
-    fn test_onion_address_deterministic() {
-        let iroh_key = SecretKey::generate(&mut rand::rng());
-
-        let addr1 = onion_address(&iroh_key);
-        let addr2 = onion_address(&iroh_key);
-
-        assert_eq!(addr1.to_string(), addr2.to_string());
-    }
-}
+mod tests;
