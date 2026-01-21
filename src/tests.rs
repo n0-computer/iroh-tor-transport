@@ -1,7 +1,7 @@
 //! Internal tests for packet protocol and sender.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
@@ -11,8 +11,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 
 use crate::{
-    iroh_to_tor_secret_key, onion_address, read_tor_packet, write_tor_packet, TorPacket,
-    TorPacketSender, TorPacketService, TorStreamIo,
+    TorPacket, TorPacketSender, TorPacketService, TorStreamIo, iroh_to_tor_secret_key,
+    onion_address, read_tor_packet, write_tor_packet,
 };
 
 #[tokio::test]
@@ -67,7 +67,8 @@ async fn test_sender_reuses_connection() -> Result<()> {
             packets.push(packet);
         }
         // Ensure no second connection is opened.
-        let accept_timeout = tokio::time::timeout(Duration::from_millis(200), listener.accept()).await;
+        let accept_timeout =
+            tokio::time::timeout(Duration::from_millis(200), listener.accept()).await;
         assert!(accept_timeout.is_err());
         Ok::<_, anyhow::Error>(packets)
     });
@@ -109,7 +110,11 @@ async fn test_sender_reuses_connection() -> Result<()> {
     assert_eq!(packets.len(), 2);
     assert_eq!(packets[0], packet1);
     assert_eq!(packets[1], packet2);
-    assert_eq!(connects.load(Ordering::SeqCst), 1, "expected single connection reuse");
+    assert_eq!(
+        connects.load(Ordering::SeqCst),
+        1,
+        "expected single connection reuse"
+    );
 
     Ok(())
 }

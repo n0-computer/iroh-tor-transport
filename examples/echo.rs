@@ -10,19 +10,21 @@ use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey, TransportAddr};
 use iroh_tor::{
-    TorControl, TorStreamIo, TorUserAddrDiscovery, TorUserTransportFactory,
-    DEFAULT_CONTROL_PORT, DEFAULT_SOCKS_PORT, iroh_to_tor_secret_key, tor_user_addr,
-    onion_address_from_endpoint,
+    DEFAULT_CONTROL_PORT, DEFAULT_SOCKS_PORT, TorControl, TorStreamIo, TorUserAddrDiscovery,
+    TorUserTransportFactory, iroh_to_tor_secret_key, onion_address_from_endpoint, tor_user_addr,
 };
 use tokio::net::TcpListener;
-use tokio_socks::tcp::Socks5Stream;
 use tokio::time::{sleep, timeout};
+use tokio_socks::tcp::Socks5Stream;
 
 const ALPN: &[u8] = b"iroh-tor/user-transport/0";
 const ONION_PORT: u16 = 9999;
 
 #[derive(Parser, Debug)]
-#[command(name = "tor-user-transport", about = "Run a one-shot iroh user transport over Tor")]
+#[command(
+    name = "tor-user-transport",
+    about = "Run a one-shot iroh user transport over Tor"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -81,10 +83,7 @@ fn load_secret() -> Result<(SecretKey, Option<String>)> {
     }
 }
 
-async fn build_tor_io(
-    listener: TcpListener,
-    socks_addr: SocketAddr,
-) -> Arc<TorStreamIo> {
+async fn build_tor_io(listener: TcpListener, socks_addr: SocketAddr) -> Arc<TorStreamIo> {
     Arc::new(TorStreamIo::new(
         {
             let listener = Arc::new(listener);
@@ -108,10 +107,7 @@ async fn build_tor_io(
     ))
 }
 
-async fn setup_endpoint(
-    sk: &SecretKey,
-    io: Arc<TorStreamIo>,
-) -> Result<Endpoint> {
+async fn setup_endpoint(sk: &SecretKey, io: Arc<TorStreamIo>) -> Result<Endpoint> {
     Ok(Endpoint::builder()
         .secret_key(sk.clone())
         .add_user_transport(Arc::new(TorUserTransportFactory::new(sk.public(), io, 64)))
@@ -177,7 +173,9 @@ async fn main() -> Result<()> {
 
     let ep_accept = ep.clone();
     if matches!(cli.command, Command::Accept) {
-        let _router = Router::builder((*ep_accept).clone()).accept(ALPN, Echo).spawn();
+        let _router = Router::builder((*ep_accept).clone())
+            .accept(ALPN, Echo)
+            .spawn();
         println!("Accepting connections (Ctrl-C to exit)...");
         tokio::signal::ctrl_c().await?;
         return Ok(());
@@ -190,8 +188,14 @@ async fn main() -> Result<()> {
     let remote_id = EndpointId::from_str(&remote).context("invalid --remote EndpointId")?;
 
     let addr = EndpointAddr::from_parts(remote_id, [TransportAddr::User(tor_user_addr(remote_id))]);
-    let conn = connect_with_retry(ep.as_ref(), addr, ALPN, std::time::Duration::from_secs(30), 10)
-        .await?;
+    let conn = connect_with_retry(
+        ep.as_ref(),
+        addr,
+        ALPN,
+        std::time::Duration::from_secs(30),
+        10,
+    )
+    .await?;
     let (mut send, mut recv) = conn.open_bi().await?;
     send.write_all(b"hello tor user transport").await?;
     send.finish()?;

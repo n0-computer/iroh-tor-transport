@@ -8,16 +8,16 @@ use std::{io, net::SocketAddr, sync::Once, time::Duration};
 use anyhow::{Context, Result};
 use iroh::SecretKey;
 use iroh_tor::{
-    generate_tor_key, iroh_to_tor_secret_key, TorControl, TorSecretKeyV3,
-    DEFAULT_CONTROL_PORT, DEFAULT_SOCKS_PORT,
+    DEFAULT_CONTROL_PORT, DEFAULT_SOCKS_PORT, TorControl, TorSecretKeyV3, generate_tor_key,
+    iroh_to_tor_secret_key,
 };
-use tracing::{error, info, warn};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     time::{Instant, timeout},
 };
 use tokio_socks::tcp::Socks5Stream;
+use tracing::{error, info, warn};
 
 const TEST_MESSAGE: &[u8] = b"Hello from Tor hidden service!";
 const HIDDEN_SERVICE_PORT: u16 = 9999;
@@ -71,7 +71,8 @@ async fn connect_via_tor(onion_addr: &str, port: u16, timeout: Duration) -> Resu
             }
             Err(e) => {
                 warn!("  Attempt {} timed out: {}", attempt, e);
-                let timeout_err = io::Error::new(io::ErrorKind::TimedOut, "SOCKS connect timed out");
+                let timeout_err =
+                    io::Error::new(io::ErrorKind::TimedOut, "SOCKS connect timed out");
                 last_error = Some(tokio_socks::Error::from(timeout_err));
             }
         }
@@ -159,7 +160,11 @@ async fn run_hidden_service_echo(tor_key: &TorSecretKeyV3, label: &str) -> Resul
     // Wait adaptively: poll Tor for the new service to appear on this connection.
     info!("Waiting for hidden service to appear in control connection list...");
     let found = tor_control
-        .wait_for_hidden_service(&created_addr, Duration::from_secs(60), Duration::from_secs(2))
+        .wait_for_hidden_service(
+            &created_addr,
+            Duration::from_secs(60),
+            Duration::from_secs(2),
+        )
         .await?;
     if !found {
         warn!(
@@ -260,7 +265,11 @@ async fn test_echo_latency_10x_single_service() -> Result<()> {
 
     info!("Waiting for hidden service to appear in control connection list...");
     let found = tor_control
-        .wait_for_hidden_service(&created_addr, Duration::from_secs(60), Duration::from_secs(2))
+        .wait_for_hidden_service(
+            &created_addr,
+            Duration::from_secs(60),
+            Duration::from_secs(2),
+        )
         .await?;
     if !found {
         warn!(

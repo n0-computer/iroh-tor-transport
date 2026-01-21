@@ -15,17 +15,16 @@ use std::{
 use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
 use iroh::{
-    EndpointId, SecretKey,
+    EndpointId, SecretKey, TransportAddr,
+    discovery::{Discovery, DiscoveryError, DiscoveryItem, EndpointData, EndpointInfo},
     endpoint::transports::{Addr, Transmit, UserSender, UserTransport, UserTransportFactory},
-    discovery::{Discovery, DiscoveryItem, EndpointData, EndpointInfo, DiscoveryError},
-    TransportAddr,
 };
 use iroh_base::UserAddr;
 use n0_future::{boxed::BoxFuture, stream};
 use n0_watcher::Watchable;
 use sha2::{Digest, Sha512};
-use tokio::{net::TcpStream, sync::Mutex, time::sleep};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::{net::TcpStream, sync::Mutex, time::sleep};
 // Re-export TorSecretKeyV3 for users who want to use native Tor keys
 pub use torut::onion::TorSecretKeyV3;
 use torut::{
@@ -79,8 +78,8 @@ pub fn onion_address(key: &SecretKey) -> OnionAddressV3 {
 /// Get the onion address for an iroh `EndpointId` (public key only).
 pub fn onion_address_from_endpoint(endpoint: EndpointId) -> Result<OnionAddressV3> {
     let bytes = endpoint.as_bytes();
-    let tor_public = TorPublicKeyV3::from_bytes(bytes)
-        .context("Invalid endpoint public key for Tor")?;
+    let tor_public =
+        TorPublicKeyV3::from_bytes(bytes).context("Invalid endpoint public key for Tor")?;
     Ok(tor_public.get_onion_address())
 }
 
@@ -152,7 +151,9 @@ fn parse_user_addr(addr: &UserAddr) -> Result<EndpointId> {
 }
 
 /// Read a single packet from a stream. Returns `Ok(None)` on clean EOF.
-pub(crate) async fn read_tor_packet<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Option<TorPacket>> {
+pub(crate) async fn read_tor_packet<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> Result<Option<TorPacket>> {
     let mut flags = [0u8; 1];
     let mut read = 0usize;
     while read < flags.len() {
@@ -171,8 +172,8 @@ pub(crate) async fn read_tor_packet<R: AsyncRead + Unpin>(reader: &mut R) -> Res
         .read_exact(&mut from_bytes)
         .await
         .context("Failed to read packet source")?;
-    let from = EndpointId::from_bytes(&from_bytes)
-        .context("Failed to parse packet source EndpointId")?;
+    let from =
+        EndpointId::from_bytes(&from_bytes).context("Failed to parse packet source EndpointId")?;
 
     let segment_size = if flags[0] & FLAG_SEGMENT_SIZE != 0 {
         let mut size_bytes = [0u8; 2];
@@ -206,7 +207,10 @@ pub(crate) async fn read_tor_packet<R: AsyncRead + Unpin>(reader: &mut R) -> Res
 }
 
 /// Write a single packet to a stream.
-pub(crate) async fn write_tor_packet<W: AsyncWrite + Unpin>(writer: &mut W, packet: &TorPacket) -> Result<()> {
+pub(crate) async fn write_tor_packet<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    packet: &TorPacket,
+) -> Result<()> {
     let mut flags = 0u8;
     if packet.segment_size.is_some() {
         flags |= FLAG_SEGMENT_SIZE;
@@ -225,8 +229,7 @@ pub(crate) async fn write_tor_packet<W: AsyncWrite + Unpin>(writer: &mut W, pack
             .await
             .context("Failed to write segment size")?;
     }
-    let len = u32::try_from(packet.data.len())
-        .context("Packet too large to encode")?;
+    let len = u32::try_from(packet.data.len()).context("Packet too large to encode")?;
     writer
         .write_all(&len.to_be_bytes())
         .await
@@ -264,9 +267,7 @@ impl TorPacketService {
 /// IO for Tor-backed streams.
 pub struct TorStreamIo {
     accept: Box<dyn Fn() -> BoxFuture<Result<TcpStream>> + Send + Sync>,
-    connect: Box<
-        dyn Fn(EndpointId) -> BoxFuture<Result<TcpStream>> + Send + Sync,
-    >,
+    connect: Box<dyn Fn(EndpointId) -> BoxFuture<Result<TcpStream>> + Send + Sync>,
 }
 
 impl TorStreamIo {
@@ -285,10 +286,7 @@ impl TorStreamIo {
     }
 
     /// Connect to the remote endpoint's stream transport.
-    pub fn connect(
-        &self,
-        endpoint: EndpointId,
-    ) -> BoxFuture<Result<TcpStream>> {
+    pub fn connect(&self, endpoint: EndpointId) -> BoxFuture<Result<TcpStream>> {
         (self.connect)(endpoint)
     }
 
@@ -345,7 +343,10 @@ impl TorPacketSender {
         let stream = self.streams.lock().await.remove(&to);
         if let Some(stream) = stream {
             let mut guard = stream.lock().await;
-            guard.shutdown().await.context("Failed to shutdown stream")?;
+            guard
+                .shutdown()
+                .await
+                .context("Failed to shutdown stream")?;
         }
         Ok(())
     }
@@ -356,7 +357,10 @@ impl TorPacketSender {
         let streams: Vec<_> = self.streams.lock().await.drain().map(|(_, v)| v).collect();
         for stream in streams {
             let mut guard = stream.lock().await;
-            guard.shutdown().await.context("Failed to shutdown stream")?;
+            guard
+                .shutdown()
+                .await
+                .context("Failed to shutdown stream")?;
         }
         Ok(())
     }
@@ -381,11 +385,7 @@ impl std::fmt::Debug for TorUserTransportFactory {
 
 impl TorUserTransportFactory {
     /// Create a new factory for the given local endpoint id.
-    pub fn new(
-        local_id: EndpointId,
-        io: Arc<TorStreamIo>,
-        recv_capacity: usize,
-    ) -> Self {
+    pub fn new(local_id: EndpointId, io: Arc<TorStreamIo>, recv_capacity: usize) -> Self {
         Self {
             local_id,
             io,
@@ -421,11 +421,7 @@ impl std::fmt::Debug for TorUserTransport {
 }
 
 impl TorUserTransport {
-    fn new(
-        local_id: EndpointId,
-        io: Arc<TorStreamIo>,
-        recv_capacity: usize,
-    ) -> Self {
+    fn new(local_id: EndpointId, io: Arc<TorStreamIo>, recv_capacity: usize) -> Self {
         let (tx, rx) = tokio::sync::mpsc::channel(recv_capacity);
         let service = TorPacketService::new(tx.clone());
         let sender = Arc::new(TorPacketSender::new(io.clone()));
@@ -481,10 +477,12 @@ impl UserSender for TorUserSender {
         dst: UserAddr,
         transmit: &Transmit<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
-        let to = parse_user_addr(&dst).map_err(|err| std::io::Error::other(err))?;
+        let to = parse_user_addr(&dst).map_err(std::io::Error::other)?;
         let segment_size = transmit
             .segment_size
-            .map(|size| u16::try_from(size).map_err(|_| std::io::Error::other("segment size too large")))
+            .map(|size| {
+                u16::try_from(size).map_err(|_| std::io::Error::other("segment size too large"))
+            })
             .transpose()?;
         let chunk_size = segment_size
             .map(|s| s as usize)
@@ -540,7 +538,9 @@ impl UserTransport for TorUserTransport {
                     break;
                 }
                 std::task::Poll::Ready(None) => {
-                    return std::task::Poll::Ready(Err(std::io::Error::other("packet channel closed")));
+                    return std::task::Poll::Ready(Err(std::io::Error::other(
+                        "packet channel closed",
+                    )));
                 }
                 std::task::Poll::Ready(Some(packet)) => {
                     if bufs[filled].len() < packet.data.len() {

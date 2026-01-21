@@ -9,12 +9,12 @@ use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, EndpointAddr, SecretKey, TransportAddr};
 use iroh_tor::{
-    TorControl, TorStreamIo, TorUserTransportFactory, TorUserAddrDiscovery,
-    DEFAULT_CONTROL_PORT, DEFAULT_SOCKS_PORT, iroh_to_tor_secret_key, tor_user_addr,
+    DEFAULT_CONTROL_PORT, DEFAULT_SOCKS_PORT, TorControl, TorStreamIo, TorUserAddrDiscovery,
+    TorUserTransportFactory, iroh_to_tor_secret_key, tor_user_addr,
 };
-use tokio_socks::tcp::Socks5Stream;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
+use tokio_socks::tcp::Socks5Stream;
 use tracing::info;
 
 const ALPN: &[u8] = b"iroh-tor/user-transport/0";
@@ -186,8 +186,7 @@ async fn test_user_transport_roundtrip_tor() -> Result<()> {
 
     let socks_addr: SocketAddr = format!("127.0.0.1:{}", DEFAULT_SOCKS_PORT).parse()?;
     info!("using socks at {socks_addr}");
-    let map: Arc<Mutex<HashMap<iroh::EndpointId, String>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+    let map: Arc<Mutex<HashMap<iroh::EndpointId, String>>> = Arc::new(Mutex::new(HashMap::new()));
 
     let sk1 = SecretKey::generate(&mut rand::rng());
     let sk2 = SecretKey::generate(&mut rand::rng());
@@ -218,8 +217,14 @@ async fn test_user_transport_roundtrip_tor() -> Result<()> {
 
     {
         let mut guard = map.lock().await;
-        guard.insert(id1, format!("{}.onion", onion1.get_address_without_dot_onion()));
-        guard.insert(id2, format!("{}.onion", onion2.get_address_without_dot_onion()));
+        guard.insert(
+            id1,
+            format!("{}.onion", onion1.get_address_without_dot_onion()),
+        );
+        guard.insert(
+            id2,
+            format!("{}.onion", onion2.get_address_without_dot_onion()),
+        );
     }
 
     let io1 = build_tor_io(listener1, map.clone(), socks_addr).await;
