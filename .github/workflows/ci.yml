@@ -24,28 +24,12 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Install Tor
+      - name: Install and configure Tor
         run: |
-          sudo apt-get update
           sudo apt-get install -y tor
-
-      - name: Start Tor daemon
-        run: |
-          sudo tor --ControlPort 9051 --CookieAuthentication 0 --RunAsDaemon 1
+          # Stop auto-started service and run with our config
+          sudo systemctl stop tor
+          tor --ControlPort 9051 --CookieAuthentication 0 --RunAsDaemon 1
           # Wait for control port to be available
           for i in {1..30}; do
             if nc -z 127.0.0.1 9051; then
@@ -64,6 +48,20 @@ jobs:
             echo "Waiting for Tor SOCKS port... ($i/30)"
             sleep 1
           done
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: Build
         run: cargo build --all-targets
