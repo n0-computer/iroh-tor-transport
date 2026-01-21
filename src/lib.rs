@@ -3,9 +3,10 @@
 //! This crate provides utilities for creating Tor hidden services that can be used
 //! as a custom transport for iroh networking.
 
-use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
+use std::{collections::HashMap, future::Future, io, pin::Pin, sync::Arc};
 
 use anyhow::{Context, Result, anyhow};
+use n0_error::{e, stack_error};
 use bytes::Bytes;
 use iroh::{
     EndpointId, SecretKey, TransportAddr,
@@ -31,6 +32,48 @@ use torut::{
     onion::{OnionAddressV3, TorPublicKeyV3, TorSecretKeyV3},
 };
 
+/// Errors that can occur when building a Tor transport.
+#[stack_error(derive, add_meta)]
+#[non_exhaustive]
+pub enum BuildError {
+    /// Failed to bind the local TCP listener.
+    #[error("Failed to bind local listener")]
+    BindListener {
+        #[error(std_err)]
+        source: io::Error,
+    },
+    /// Failed to connect to the Tor control port.
+    #[error("Failed to connect to Tor control port")]
+    ControlConnect {
+        #[error(std_err)]
+        source: io::Error,
+    },
+    /// Failed to load Tor protocol info.
+    #[error("Failed to load Tor protocol info")]
+    ProtocolInfo {
+        #[error(std_err)]
+        source: ConnError,
+    },
+    /// Failed to determine Tor auth method.
+    #[error("Failed to determine Tor auth method")]
+    AuthMethod {
+        #[error(std_err)]
+        source: io::Error,
+    },
+    /// Failed to authenticate with Tor.
+    #[error("Failed to authenticate with Tor")]
+    Auth {
+        #[error(std_err)]
+        source: ConnError,
+    },
+    /// Failed to create hidden service.
+    #[error("Failed to create hidden service")]
+    CreateOnion {
+        #[error(std_err)]
+        source: ConnError,
+    },
+}
+
 /// Convert an iroh SecretKey to a Tor v3 secret key.
 fn iroh_to_tor_secret_key(key: &SecretKey) -> TorSecretKeyV3 {
     let seed = key.to_bytes();
@@ -43,11 +86,13 @@ fn iroh_to_tor_secret_key(key: &SecretKey) -> TorSecretKeyV3 {
 }
 
 /// Get the onion address for an iroh `EndpointId` (public key only).
-fn onion_address_from_endpoint(endpoint: EndpointId) -> Result<OnionAddressV3> {
+///
+/// Returns `None` if the public key bytes are invalid for Tor (should not happen
+/// with valid iroh keys since they use the same curve).
+pub(crate) fn onion_address_from_endpoint(endpoint: EndpointId) -> Option<OnionAddressV3> {
     let bytes = endpoint.as_bytes();
-    let tor_public =
-        TorPublicKeyV3::from_bytes(bytes).context("Invalid endpoint public key for Tor")?;
-    Ok(tor_public.get_onion_address())
+    let tor_public = TorPublicKeyV3::from_bytes(bytes).ok()?;
+    Some(tor_public.get_onion_address())
 }
 
 /// A packet carried over the Tor stream transport.
@@ -218,8 +263,8 @@ impl TorPacketService {
 
 /// IO for Tor-backed streams.
 pub(crate) struct TorStreamIo {
-    accept: Box<dyn Fn() -> BoxFuture<Result<TcpStream>> + Send + Sync>,
-    connect: Box<dyn Fn(EndpointId) -> BoxFuture<Result<TcpStream>> + Send + Sync>,
+    accept: Box<dyn Fn() -> BoxFuture<io::Result<TcpStream>> + Send + Sync>,
+    connect: Box<dyn Fn(EndpointId) -> BoxFuture<io::Result<TcpStream>> + Send + Sync>,
 }
 
 impl TorStreamIo {
@@ -230,9 +275,9 @@ impl TorStreamIo {
     ) -> Self
     where
         Accept: Fn() -> AcceptFut + Send + Sync + 'static,
-        AcceptFut: Future<Output = Result<TcpStream>> + Send + 'static,
+        AcceptFut: Future<Output = io::Result<TcpStream>> + Send + 'static,
         Connect: Fn(EndpointId) -> ConnectFut + Send + Sync + 'static,
-        ConnectFut: Future<Output = Result<TcpStream>> + Send + 'static,
+        ConnectFut: Future<Output = io::Result<TcpStream>> + Send + 'static,
     {
         Self {
             accept: Box::new(move || Box::pin(accept())),
@@ -241,12 +286,12 @@ impl TorStreamIo {
     }
 
     /// Connect to the remote endpoint's stream transport.
-    fn connect(&self, endpoint: EndpointId) -> BoxFuture<Result<TcpStream>> {
+    fn connect(&self, endpoint: EndpointId) -> BoxFuture<io::Result<TcpStream>> {
         (self.connect)(endpoint)
     }
 
     /// Accept the next incoming stream.
-    fn accept(&self) -> BoxFuture<Result<TcpStream>> {
+    fn accept(&self) -> BoxFuture<io::Result<TcpStream>> {
         (self.accept)()
     }
 }
@@ -379,9 +424,11 @@ impl TorUserTransportBuilder {
     /// # Errors
     ///
     /// Returns an error if:
+    /// - Cannot bind the local listener
     /// - Cannot connect to the Tor control port
+    /// - Cannot authenticate with Tor
     /// - Cannot create the hidden service
-    pub async fn build(self) -> Result<Arc<TorUserTransport>> {
+    pub async fn build(self) -> Result<Arc<TorUserTransport>, BuildError> {
         let local_id = self.secret_key.public();
 
         #[cfg(test)]
@@ -396,27 +443,29 @@ impl TorUserTransportBuilder {
         // Bind local listener
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
-            .context("Failed to bind local listener")?;
-        let local_addr = listener.local_addr()?;
+            .map_err(|err| e!(BuildError::BindListener, err))?;
+        let local_addr = listener
+            .local_addr()
+            .map_err(|err| e!(BuildError::BindListener, err))?;
         let listener = Arc::new(listener);
 
         // Connect to Tor control port and create hidden service
         let control_addr = format!("127.0.0.1:{}", self.control_port);
         let stream = TcpStream::connect(&control_addr)
             .await
-            .context("Failed to connect to Tor control port")?;
+            .map_err(|err| e!(BuildError::ControlConnect, err))?;
         let mut conn = UnauthenticatedConn::new(stream);
         let auth_data = conn
             .load_protocol_info()
             .await
-            .context("Failed to load Tor protocol info")?;
+            .map_err(|err| e!(BuildError::ProtocolInfo, err))?;
         let auth_method = auth_data
             .make_auth_data()
-            .context("Failed to determine Tor auth method")?;
+            .map_err(|err| e!(BuildError::AuthMethod, err))?;
         if let Some(auth) = auth_method {
             conn.authenticate(&auth)
                 .await
-                .context("Failed to authenticate with Tor")?;
+                .map_err(|err| e!(BuildError::Auth, err))?;
         }
         let mut conn: AuthenticatedConn<TcpStream, EventHandler> = conn.into_authenticated().await;
 
@@ -432,7 +481,7 @@ impl TorUserTransportBuilder {
             Err(ConnError::InvalidResponseCode(552)) => {
                 // Service already exists, that's fine
             }
-            Err(e) => return Err(e).context("Failed to create hidden service"),
+            Err(err) => return Err(e!(BuildError::CreateOnion, err)),
         }
 
         tracing::info!(
@@ -453,10 +502,14 @@ impl TorUserTransportBuilder {
                 }
             },
             move |endpoint| async move {
-                let onion = onion_address_from_endpoint(endpoint)?;
+                let onion = onion_address_from_endpoint(endpoint).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "invalid endpoint id")
+                })?;
                 let onion_addr = format!("{}.onion", onion.get_address_without_dot_onion());
                 let stream =
-                    Socks5Stream::connect(socks_addr, (onion_addr.as_str(), onion_port)).await?;
+                    Socks5Stream::connect(socks_addr, (onion_addr.as_str(), onion_port))
+                        .await
+                        .map_err(io::Error::other)?;
                 Ok(stream.into_inner())
             },
         ));
@@ -553,7 +606,7 @@ impl std::fmt::Debug for TorUserTransport {
 }
 
 impl UserTransport for TorUserTransport {
-    fn bind(&self) -> std::io::Result<Box<dyn UserEndpoint>> {
+    fn bind(&self) -> io::Result<Box<dyn UserEndpoint>> {
         let (tx, rx) = tokio::sync::mpsc::channel(DEFAULT_RECV_CAPACITY);
         let service = TorPacketService::new(tx);
         let sender = Arc::new(TorPacketSender::new(self.io.clone()));
@@ -643,12 +696,12 @@ impl UserSender for TorUserSender {
         _cx: &mut std::task::Context,
         dst: UserAddr,
         transmit: &Transmit<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        let to = parse_user_addr(&dst).map_err(std::io::Error::other)?;
+    ) -> std::task::Poll<io::Result<()>> {
+        let to = parse_user_addr(&dst).map_err(io::Error::other)?;
         let segment_size = transmit
             .segment_size
             .map(|size| {
-                u16::try_from(size).map_err(|_| std::io::Error::other("segment size too large"))
+                u16::try_from(size).map_err(|_| io::Error::other("segment size too large"))
             })
             .transpose()?;
         let chunk_size = segment_size
@@ -686,10 +739,10 @@ impl UserEndpoint for TorUserEndpoint {
     fn poll_recv(
         &mut self,
         cx: &mut std::task::Context,
-        bufs: &mut [std::io::IoSliceMut<'_>],
+        bufs: &mut [io::IoSliceMut<'_>],
         metas: &mut [quinn_udp::RecvMeta],
         source_addrs: &mut [Addr],
-    ) -> std::task::Poll<std::io::Result<usize>> {
+    ) -> std::task::Poll<io::Result<usize>> {
         let n = bufs.len().min(metas.len()).min(source_addrs.len());
         if n == 0 {
             return std::task::Poll::Ready(Ok(0));
@@ -705,7 +758,7 @@ impl UserEndpoint for TorUserEndpoint {
                     break;
                 }
                 std::task::Poll::Ready(None) => {
-                    return std::task::Poll::Ready(Err(std::io::Error::other(
+                    return std::task::Poll::Ready(Err(io::Error::other(
                         "packet channel closed",
                     )));
                 }

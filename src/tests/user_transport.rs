@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, Once},
 };
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use iroh::{
     Endpoint, EndpointAddr, SecretKey, TransportAddr,
     endpoint::Connection,
@@ -86,7 +86,7 @@ async fn build_local_io(
                         .await
                         .get(&endpoint)
                         .copied()
-                        .context("missing endpoint addr")?;
+                        .ok_or_else(|| std::io::Error::other("missing endpoint addr"))?;
                     let stream = tokio::net::TcpStream::connect(addr).await?;
                     Ok(stream)
                 }
