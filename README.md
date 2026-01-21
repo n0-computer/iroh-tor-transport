@@ -29,12 +29,14 @@ handles framing, packet I/O, and stream reuse:
 
 ```rust
 use std::sync::Arc;
-use iroh_tor::{TorStreamIo, TorUserTransportFactory};
+use iroh_tor::{TorStreamIo, TorUserTransport};
 
 let io = Arc::new(TorStreamIo::new(accept_fn, connect_fn));
-let factory = TorUserTransportFactory::new(endpoint_id, io, 64);
+let config = TorUserTransport::builder(endpoint_id, io).build();
 
-// add_user_transport(factory) on the iroh Endpoint builder
+// On the iroh Endpoint builder:
+// .add_user_transport(config.factory())
+// .discovery(config.discovery())
 ```
 
 ## Packet framing
@@ -56,6 +58,4 @@ from the public key.
 ## Tests
 
 - `tests/echo.rs`: hidden-service echo tests (Tor required)
-- `tests/packet_service.rs`: packet framing and service dispatch
-- `tests/packet_sender.rs`: stream reuse in the sender
-- `tests/user_transport.rs`: local and Tor-backed user transport tests
+- Internal tests cover packet framing, sender stream reuse, and user transport

@@ -113,7 +113,7 @@ pub fn tor_user_addr(endpoint: EndpointId) -> UserAddr {
 
 /// Discovery service that maps any `EndpointId` to its Tor user transport address.
 #[derive(Debug, Clone)]
-pub struct TorUserAddrDiscovery;
+struct TorUserAddrDiscovery;
 
 impl Discovery for TorUserAddrDiscovery {
     fn resolve(
@@ -360,67 +360,26 @@ impl TorPacketSender {
     }
 }
 
-/// A user-transport factory backed by Tor streams.
-#[derive(Clone)]
-pub struct TorUserTransportFactory {
+const DEFAULT_RECV_CAPACITY: usize = 64 * 1024;
+
+/// Builder for [`TorUserTransport`].
+pub struct TorUserTransportBuilder {
     local_id: EndpointId,
     io: Arc<TorStreamIo>,
     recv_capacity: usize,
 }
 
-impl std::fmt::Debug for TorUserTransportFactory {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TorUserTransportFactory")
-            .field("local_id", &self.local_id)
-            .field("recv_capacity", &self.recv_capacity)
-            .finish()
-    }
-}
+impl TorUserTransportBuilder {
+    /// Build the transport.
+    ///
+    /// This spawns a background task to accept incoming Tor streams.
+    pub fn build(self) -> TorUserTransport {
+        let (tx, rx) = tokio::sync::mpsc::channel(self.recv_capacity);
+        let service = TorPacketService::new(tx);
+        let sender = Arc::new(TorPacketSender::new(self.io.clone()));
+        let watchable = Watchable::new(vec![tor_user_addr(self.local_id)]);
 
-impl TorUserTransportFactory {
-    /// Create a new factory for the given local endpoint id.
-    pub fn new(local_id: EndpointId, io: Arc<TorStreamIo>, recv_capacity: usize) -> Self {
-        Self {
-            local_id,
-            io,
-            recv_capacity,
-        }
-    }
-}
-
-impl UserTransportFactory for TorUserTransportFactory {
-    fn bind(&self) -> std::io::Result<Box<dyn UserTransport>> {
-        Ok(Box::new(TorUserTransport::new(
-            self.local_id,
-            self.io.clone(),
-            self.recv_capacity,
-        )))
-    }
-}
-
-/// A user transport that sends/receives `TorPacket`s over Tor streams.
-struct TorUserTransport {
-    local_id: EndpointId,
-    watchable: Watchable<Vec<UserAddr>>,
-    receiver: tokio::sync::mpsc::Receiver<TorPacket>,
-    sender: Arc<TorPacketSender>,
-}
-
-impl std::fmt::Debug for TorUserTransport {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TorUserTransport")
-            .field("local_id", &self.local_id)
-            .finish()
-    }
-}
-
-impl TorUserTransport {
-    fn new(local_id: EndpointId, io: Arc<TorStreamIo>, recv_capacity: usize) -> Self {
-        let (tx, rx) = tokio::sync::mpsc::channel(recv_capacity);
-        let service = TorPacketService::new(tx.clone());
-        let sender = Arc::new(TorPacketSender::new(io.clone()));
-        let watchable = Watchable::new(vec![tor_user_addr(local_id)]);
-
+        let io = self.io.clone();
         tokio::spawn(async move {
             loop {
                 match io.accept().await {
@@ -438,12 +397,92 @@ impl TorUserTransport {
             }
         });
 
-        Self {
-            local_id,
+        TorUserTransport {
+            local_id: self.local_id,
+            io: self.io,
             watchable,
             receiver: rx,
             sender,
         }
+    }
+}
+
+/// A Tor-backed user transport for iroh.
+///
+/// Use `TorUserTransport::builder()` to create and configure.
+///
+/// # Example
+///
+/// ```ignore
+/// let transport = TorUserTransport::builder(endpoint_id, io).build();
+///
+/// Endpoint::builder()
+///     .add_user_transport(transport.factory())
+///     .discovery(transport.discovery())
+///     // ...
+/// ```
+pub struct TorUserTransport {
+    local_id: EndpointId,
+    io: Arc<TorStreamIo>,
+    watchable: Watchable<Vec<UserAddr>>,
+    receiver: tokio::sync::mpsc::Receiver<TorPacket>,
+    sender: Arc<TorPacketSender>,
+}
+
+impl TorUserTransport {
+    /// Create a builder for configuring a Tor user transport.
+    pub fn builder(local_id: EndpointId, io: Arc<TorStreamIo>) -> TorUserTransportBuilder {
+        TorUserTransportBuilder {
+            local_id,
+            io,
+            recv_capacity: DEFAULT_RECV_CAPACITY,
+        }
+    }
+
+    /// Returns a factory for use with iroh's `add_user_transport`.
+    pub fn factory(&self) -> Arc<dyn UserTransportFactory> {
+        Arc::new(TorUserTransportFactory {
+            local_id: self.local_id,
+            io: self.io.clone(),
+        })
+    }
+
+    /// Returns a discovery service for this transport.
+    ///
+    /// The discovery service maps any `EndpointId` to its Tor user transport address.
+    pub fn discovery(&self) -> impl Discovery {
+        TorUserAddrDiscovery
+    }
+}
+
+impl std::fmt::Debug for TorUserTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TorUserTransport")
+            .field("local_id", &self.local_id)
+            .finish()
+    }
+}
+
+/// Internal factory implementation.
+#[derive(Clone)]
+struct TorUserTransportFactory {
+    local_id: EndpointId,
+    io: Arc<TorStreamIo>,
+}
+
+impl std::fmt::Debug for TorUserTransportFactory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TorUserTransportFactory")
+            .field("local_id", &self.local_id)
+            .finish()
+    }
+}
+
+impl UserTransportFactory for TorUserTransportFactory {
+    fn bind(&self) -> std::io::Result<Box<dyn UserTransport>> {
+        Ok(Box::new(
+            TorUserTransport::builder(self.local_id, self.io.clone()).build(),
+        ))
     }
 }
 

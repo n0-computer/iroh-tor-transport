@@ -14,8 +14,8 @@ use tokio_socks::tcp::Socks5Stream;
 use tracing::info;
 
 use crate::{
-    DEFAULT_CONTROL_PORT, DEFAULT_SOCKS_PORT, TorControl, TorStreamIo, TorUserAddrDiscovery,
-    TorUserTransportFactory, iroh_to_tor_secret_key, tor_user_addr,
+    DEFAULT_CONTROL_PORT, DEFAULT_SOCKS_PORT, TorControl, TorStreamIo, TorUserTransport,
+    iroh_to_tor_secret_key, tor_user_addr,
 };
 
 const ALPN: &[u8] = b"iroh-tor/user-transport/0";
@@ -49,14 +49,15 @@ async fn setup_endpoint(
     io: Arc<TorStreamIo>,
     use_user_discovery: bool,
 ) -> Result<Endpoint> {
+    let transport = TorUserTransport::builder(sk.public(), io).build();
     let mut builder = Endpoint::builder()
         .secret_key(sk.clone())
-        .add_user_transport(Arc::new(TorUserTransportFactory::new(sk.public(), io, 64)))
+        .add_user_transport(transport.factory())
         .clear_ip_transports()
         .clear_relay_transports()
         .clear_discovery();
     if use_user_discovery {
-        builder = builder.discovery(TorUserAddrDiscovery);
+        builder = builder.discovery(transport.discovery());
     }
     Ok(builder.bind().await?)
 }

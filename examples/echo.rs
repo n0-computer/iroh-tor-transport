@@ -10,8 +10,8 @@ use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey, TransportAddr};
 use iroh_tor::{
-    DEFAULT_CONTROL_PORT, DEFAULT_SOCKS_PORT, TorControl, TorStreamIo, TorUserAddrDiscovery,
-    TorUserTransportFactory, iroh_to_tor_secret_key, onion_address_from_endpoint, tor_user_addr,
+    DEFAULT_CONTROL_PORT, DEFAULT_SOCKS_PORT, TorControl, TorStreamIo, TorUserTransport,
+    iroh_to_tor_secret_key, onion_address_from_endpoint, tor_user_addr,
 };
 use tokio::net::TcpListener;
 use tokio::time::{sleep, timeout};
@@ -108,13 +108,14 @@ async fn build_tor_io(listener: TcpListener, socks_addr: SocketAddr) -> Arc<TorS
 }
 
 async fn setup_endpoint(sk: &SecretKey, io: Arc<TorStreamIo>) -> Result<Endpoint> {
+    let transport = TorUserTransport::builder(sk.public(), io).build();
     Ok(Endpoint::builder()
         .secret_key(sk.clone())
-        .add_user_transport(Arc::new(TorUserTransportFactory::new(sk.public(), io, 64)))
+        .add_user_transport(transport.factory())
         .clear_ip_transports()
         .clear_relay_transports()
         .clear_discovery()
-        .discovery(TorUserAddrDiscovery)
+        .discovery(transport.discovery())
         .bind()
         .await?)
 }
