@@ -101,7 +101,7 @@ pub(crate) struct TorPacket {
     pub from: EndpointId,
     /// Raw packet payload.
     pub data: Bytes,
-    /// Optional segment size hint for GRO; not a payload size limit.
+    /// Segment size to split up data (optional).
     pub segment_size: Option<u16>,
 }
 
