@@ -8,14 +8,14 @@ use std::{collections::HashMap, future::Future, io, pin::Pin, sync::Arc};
 use bytes::Bytes;
 use iroh::{
     EndpointId, SecretKey, TransportAddr,
-    discovery::{Discovery, DiscoveryError, DiscoveryItem, EndpointData, EndpointInfo},
+    address_lookup::{self, AddressLookup, EndpointData, EndpointInfo, Item},
     endpoint::{
         Builder,
         presets::Preset,
-        transports::{Addr, Transmit, UserEndpoint, UserSender, UserTransport},
+        transports::{Addr, CustomEndpoint, CustomSender, CustomTransport, Transmit},
     },
 };
-use iroh_base::UserAddr;
+use iroh_base::CustomAddr;
 use n0_error::{e, stack_error};
 use n0_future::{boxed::BoxFuture, stream};
 use n0_watcher::Watchable;
@@ -110,24 +110,24 @@ const FLAG_SEGMENT_SIZE: u8 = 0x01;
 const TOR_USER_TRANSPORT_ID: u64 = 0x544f52;
 
 /// Build a user transport address for the Tor transport.
-fn tor_user_addr(endpoint: EndpointId) -> UserAddr {
-    UserAddr::from_parts(TOR_USER_TRANSPORT_ID, endpoint.as_bytes())
+fn tor_user_addr(endpoint: EndpointId) -> CustomAddr {
+    CustomAddr::from_parts(TOR_USER_TRANSPORT_ID, endpoint.as_bytes())
 }
 
 /// Discovery service that maps any `EndpointId` to its Tor user transport address.
 #[derive(Debug, Clone)]
-struct TorUserAddrDiscovery;
+struct TorAddressLookup;
 
-impl Discovery for TorUserAddrDiscovery {
+impl AddressLookup for TorAddressLookup {
     fn resolve(
         &self,
         endpoint_id: EndpointId,
-    ) -> Option<n0_future::boxed::BoxStream<Result<DiscoveryItem, DiscoveryError>>> {
+    ) -> Option<n0_future::boxed::BoxStream<Result<Item, address_lookup::Error>>> {
         let info = EndpointInfo {
             endpoint_id,
             data: EndpointData::new([TransportAddr::User(tor_user_addr(endpoint_id))]),
         };
-        Some(Box::pin(stream::once(Ok(DiscoveryItem::new(
+        Some(Box::pin(stream::once(Ok(Item::new(
             info,
             "tor-user-addr",
             None,
@@ -135,7 +135,7 @@ impl Discovery for TorUserAddrDiscovery {
     }
 }
 
-fn parse_user_addr(addr: &UserAddr) -> io::Result<EndpointId> {
+fn parse_user_addr(addr: &CustomAddr) -> io::Result<EndpointId> {
     if addr.id() != TOR_USER_TRANSPORT_ID {
         return Err(io::Error::other("unexpected transport id"));
     }
@@ -541,8 +541,8 @@ impl TorUserTransport {
     /// Returns a discovery service for this transport.
     ///
     /// The discovery service maps any `EndpointId` to its Tor user transport address.
-    pub fn discovery(&self) -> impl Discovery {
-        TorUserAddrDiscovery
+    pub fn discovery(&self) -> impl AddressLookup {
+        TorAddressLookup
     }
 
     /// Returns a preset that configures an endpoint to use this Tor transport.
@@ -575,8 +575,8 @@ impl std::fmt::Debug for TorUserTransport {
     }
 }
 
-impl UserTransport for TorUserTransport {
-    fn bind(&self) -> io::Result<Box<dyn UserEndpoint>> {
+impl CustomTransport for TorUserTransport {
+    fn bind(&self) -> io::Result<Box<dyn CustomEndpoint>> {
         let (tx, rx) = tokio::sync::mpsc::channel(DEFAULT_RECV_CAPACITY);
         let service = TorPacketService::new(tx);
         let sender = Arc::new(TorPacketSender::new(self.io.clone()));
@@ -611,14 +611,14 @@ impl UserTransport for TorUserTransport {
 
 /// Internal preset for configuring an iroh endpoint to use the Tor transport.
 struct TorPreset {
-    factory: Arc<dyn UserTransport>,
+    factory: Arc<dyn CustomTransport>,
 }
 
 impl Preset for TorPreset {
     fn apply(self, builder: Builder) -> Builder {
         builder
             .add_user_transport(self.factory)
-            .discovery(TorUserAddrDiscovery)
+            .address_lookup(TorAddressLookup)
     }
 }
 
@@ -630,7 +630,7 @@ impl Preset for TorPreset {
 /// for the lifetime of the endpoint.
 struct TorUserEndpoint {
     local_id: EndpointId,
-    watchable: Watchable<Vec<UserAddr>>,
+    watchable: Watchable<Vec<CustomAddr>>,
     receiver: tokio::sync::mpsc::Receiver<TorPacket>,
     sender: Arc<TorPacketSender>,
 }
@@ -656,15 +656,15 @@ impl std::fmt::Debug for TorUserSender {
     }
 }
 
-impl UserSender for TorUserSender {
-    fn is_valid_send_addr(&self, addr: &UserAddr) -> bool {
+impl CustomSender for TorUserSender {
+    fn is_valid_send_addr(&self, addr: &CustomAddr) -> bool {
         addr.id() == TOR_USER_TRANSPORT_ID && addr.data().len() == 32
     }
 
     fn poll_send(
         &self,
         _cx: &mut std::task::Context,
-        dst: UserAddr,
+        dst: CustomAddr,
         transmit: &Transmit<'_>,
     ) -> std::task::Poll<io::Result<()>> {
         let to = parse_user_addr(&dst).map_err(io::Error::other)?;
@@ -692,12 +692,12 @@ impl UserSender for TorUserSender {
     }
 }
 
-impl UserEndpoint for TorUserEndpoint {
-    fn watch_local_addrs(&self) -> n0_watcher::Direct<Vec<UserAddr>> {
+impl CustomEndpoint for TorUserEndpoint {
+    fn watch_local_addrs(&self) -> n0_watcher::Direct<Vec<CustomAddr>> {
         self.watchable.watch()
     }
 
-    fn create_sender(&self) -> Arc<dyn UserSender> {
+    fn create_sender(&self) -> Arc<dyn CustomSender> {
         Arc::new(TorUserSender {
             local_id: self.local_id,
             sender: self.sender.clone(),

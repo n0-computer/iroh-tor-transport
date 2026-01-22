@@ -49,7 +49,7 @@ async fn setup_endpoint(sk: SecretKey, io: Arc<TorStreamIo>) -> Result<Endpoint>
         .secret_key(sk)
         .clear_ip_transports()
         .clear_relay_transports()
-        .clear_discovery()
+        .clear_address_lookup()
         .preset(transport.preset())
         .bind()
         .await?)

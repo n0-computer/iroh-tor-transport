@@ -127,7 +127,7 @@ async fn main() -> Result<()> {
             .secret_key(secret)
             .clear_ip_transports()
             .clear_relay_transports()
-            .clear_discovery()
+            .clear_address_lookup()
             .preset(transport.preset())
             .bind()
             .await?,

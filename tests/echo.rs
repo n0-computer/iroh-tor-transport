@@ -482,7 +482,7 @@ async fn test_user_transport_roundtrip_tor() -> Result<()> {
         .secret_key(sk1)
         .clear_ip_transports()
         .clear_relay_transports()
-        .clear_discovery()
+        .clear_address_lookup()
         .preset(transport1.preset())
         .bind()
         .await?;
@@ -491,7 +491,7 @@ async fn test_user_transport_roundtrip_tor() -> Result<()> {
         .secret_key(sk2)
         .clear_ip_transports()
         .clear_relay_transports()
-        .clear_discovery()
+        .clear_address_lookup()
         .preset(transport2.preset())
         .bind()
         .await?;
