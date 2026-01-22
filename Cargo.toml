@@ -2,7 +2,11 @@
 name = "iroh-tor"
 version = "0.1.0"
 edition = "2024"
+description = "Tor hidden service transport for iroh"
 license = "MIT OR Apache-2.0"
+authors = ["Rüdiger Klaehn <rklaehn@protonmail.com>", "n0 team"]
+repository = "https://github.com/n0-computer/iroh-tor"
+keywords = ["iroh", "tor", "onion", "transport"]
 
 [dependencies]
 torut = "0.2"
