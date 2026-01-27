@@ -27,12 +27,12 @@ and handles packet framing and stream reuse:
 
 ```rust
 use iroh::{Endpoint, SecretKey};
-use iroh_tor::TorUserTransport;
+use iroh_tor::TorCustomTransport;
 
 let secret_key = SecretKey::generate(&mut rand::rng());
 
 // Build the transport (creates hidden service)
-let transport = TorUserTransport::builder()
+let transport = TorCustomTransport::builder()
     .build(secret_key.clone())
     .await?;
 
@@ -47,16 +47,6 @@ let endpoint = Endpoint::builder()
 The `preset()` method configures the endpoint with:
 - The Tor user transport
 - A discovery service that derives Tor addresses from endpoint IDs
-
-## Packet framing
-
-Each packet is framed as:
-
-- `flags: u8` (bit 0 indicates `segment_size` present)
-- `from: [u8; 32]` (iroh `EndpointId`)
-- `segment_size: u16` (optional hint, not a payload limit)
-- `data_len: u32`
-- `data: [u8; data_len]`
 
 ## Example
 

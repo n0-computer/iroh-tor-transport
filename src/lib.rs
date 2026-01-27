@@ -664,10 +664,10 @@ impl CustomSender for TorUserSender {
     fn poll_send(
         &self,
         _cx: &mut std::task::Context,
-        dst: CustomAddr,
+        dst: &CustomAddr,
         transmit: &Transmit<'_>,
     ) -> std::task::Poll<io::Result<()>> {
-        let to = parse_user_addr(&dst).map_err(io::Error::other)?;
+        let to = parse_user_addr(dst).map_err(io::Error::other)?;
         let segment_size = transmit
             .segment_size
             .map(|size| u16::try_from(size).map_err(|_| io::Error::other("segment size too large")))
