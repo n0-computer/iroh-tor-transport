@@ -15,7 +15,7 @@ use iroh::{
 use tokio::{net::TcpListener, sync::Mutex};
 use tracing::info;
 
-use crate::{TorStreamIo, TorCustomTransport, tor_user_addr};
+use crate::{TorCustomTransport, TorStreamIo, tor_user_addr};
 
 const ALPN: &[u8] = b"iroh-tor/user-transport/0";
 
@@ -44,7 +44,10 @@ fn init_tracing() {
 }
 
 async fn setup_endpoint(sk: SecretKey, io: Arc<TorStreamIo>) -> Result<Endpoint> {
-    let transport = TorCustomTransport::builder().io(io).build(sk.clone()).await?;
+    let transport = TorCustomTransport::builder()
+        .io(io)
+        .build(sk.clone())
+        .await?;
     Ok(Endpoint::builder()
         .secret_key(sk)
         .clear_ip_transports()
