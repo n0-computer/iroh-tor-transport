@@ -435,7 +435,7 @@ async fn test_echo_latency_10x_single_service() -> Result<()> {
 
 /// Test iroh user transport roundtrip over Tor.
 ///
-/// This uses the public API only (TorUserTransport::builder).
+/// This uses the public API only (TorCustomTransport::builder).
 #[tokio::test]
 async fn test_user_transport_roundtrip_tor() -> Result<()> {
     use iroh::{
@@ -443,7 +443,7 @@ async fn test_user_transport_roundtrip_tor() -> Result<()> {
         endpoint::Connection,
         protocol::{AcceptError, ProtocolHandler, Router},
     };
-    use iroh_tor::TorUserTransport;
+    use iroh_tor_transport::TorCustomTransport;
 
     const ALPN: &[u8] = b"iroh-tor/user-transport/0";
 
@@ -469,11 +469,11 @@ async fn test_user_transport_roundtrip_tor() -> Result<()> {
     let id2 = sk2.public();
 
     // Build transports using the real Tor builder (creates hidden services)
-    let transport1 = TorUserTransport::builder()
+    let transport1 = TorCustomTransport::builder()
         .build(sk1.clone())
         .await
         .context("Failed to create transport1. Is Tor running with ControlPort 9051?")?;
-    let transport2 = TorUserTransport::builder()
+    let transport2 = TorCustomTransport::builder()
         .build(sk2.clone())
         .await
         .context("Failed to create transport2")?;

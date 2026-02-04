@@ -125,7 +125,7 @@ impl AddressLookup for TorAddressLookup {
     ) -> Option<n0_future::boxed::BoxStream<Result<Item, address_lookup::Error>>> {
         let info = EndpointInfo {
             endpoint_id,
-            data: EndpointData::new([TransportAddr::User(tor_user_addr(endpoint_id))]),
+            data: EndpointData::new([TransportAddr::Custom(tor_user_addr(endpoint_id))]),
         };
         Some(Box::pin(stream::once(Ok(Item::new(
             info,
@@ -346,7 +346,7 @@ type EventHandler = Box<
         + Sync,
 >;
 
-/// Builder for [`TorUserTransport`].
+/// Builder for [`TorCustomTransport`].
 ///
 /// # Defaults
 ///
@@ -354,7 +354,7 @@ type EventHandler = Box<
 /// - Control port: 9051
 /// - Onion service port: 9999
 #[derive(Clone, Default)]
-pub struct TorUserTransportBuilder {
+pub struct TorCustomTransportBuilder {
     socks_port: u16,
     control_port: u16,
     onion_port: u16,
@@ -362,7 +362,7 @@ pub struct TorUserTransportBuilder {
     io: Option<Arc<TorStreamIo>>,
 }
 
-impl TorUserTransportBuilder {
+impl TorCustomTransportBuilder {
     /// Set the SOCKS5 proxy port (default: 9050).
     pub fn socks_port(mut self, port: u16) -> Self {
         self.socks_port = port;
@@ -404,12 +404,12 @@ impl TorUserTransportBuilder {
     /// - Cannot connect to the Tor control port
     /// - Cannot authenticate with Tor
     /// - Cannot create the hidden service
-    pub async fn build(self, secret_key: SecretKey) -> Result<Arc<TorUserTransport>, BuildError> {
+    pub async fn build(self, secret_key: SecretKey) -> Result<Arc<TorCustomTransport>, BuildError> {
         let local_id = secret_key.public();
 
         #[cfg(test)]
         if let Some(io) = self.io {
-            return Ok(Arc::new(TorUserTransport {
+            return Ok(Arc::new(TorCustomTransport {
                 local_id,
                 io,
                 control_conn: None,
@@ -489,7 +489,7 @@ impl TorUserTransportBuilder {
             },
         ));
 
-        Ok(Arc::new(TorUserTransport {
+        Ok(Arc::new(TorCustomTransport {
             local_id,
             io,
             control_conn: Some(Arc::new(conn)),
@@ -502,12 +502,12 @@ impl TorUserTransportBuilder {
 /// This holds the configuration and IO for the Tor transport. The actual
 /// transport instance is created when iroh calls `bind()` during endpoint setup.
 ///
-/// Use `TorUserTransport::builder()` to create and configure.
+/// Use `TorCustomTransport::builder()` to create and configure.
 ///
 /// # Example
 ///
 /// ```ignore
-/// let transport = TorUserTransport::builder(secret_key).build().await;
+/// let transport = TorCustomTransport::builder(secret_key).build().await;
 ///
 /// Endpoint::builder()
 ///     .secret_key(secret_key)
@@ -516,20 +516,20 @@ impl TorUserTransportBuilder {
 ///     .await?
 /// ```
 #[derive(Clone)]
-pub struct TorUserTransport {
+pub struct TorCustomTransport {
     local_id: EndpointId,
     io: Arc<TorStreamIo>,
     /// Keep the control connection alive to maintain the ephemeral hidden service.
     /// The hidden service is removed when this connection is dropped.
-    /// Wrapped in Arc so it can be shared with TorUserEndpoint.
+    /// Wrapped in Arc so it can be shared with TorCustomEndpoint.
     #[allow(dead_code)]
     control_conn: Option<Arc<AuthenticatedConn<TcpStream, EventHandler>>>,
 }
 
-impl TorUserTransport {
+impl TorCustomTransport {
     /// Create a builder for configuring a Tor user transport.
-    pub fn builder() -> TorUserTransportBuilder {
-        TorUserTransportBuilder {
+    pub fn builder() -> TorCustomTransportBuilder {
+        TorCustomTransportBuilder {
             socks_port: DEFAULT_SOCKS_PORT,
             control_port: DEFAULT_CONTROL_PORT,
             onion_port: DEFAULT_ONION_PORT,
@@ -552,7 +552,7 @@ impl TorUserTransport {
     /// # Example
     ///
     /// ```ignore
-    /// let transport = TorUserTransport::builder(sk.clone()).build().await;
+    /// let transport = TorCustomTransport::builder(sk.clone()).build().await;
     ///
     /// Endpoint::builder()
     ///     .secret_key(sk)
@@ -567,15 +567,15 @@ impl TorUserTransport {
     }
 }
 
-impl std::fmt::Debug for TorUserTransport {
+impl std::fmt::Debug for TorCustomTransport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TorUserTransport")
+        f.debug_struct("TorCustomTransport")
             .field("local_id", &self.local_id)
             .finish()
     }
 }
 
-impl CustomTransport for TorUserTransport {
+impl CustomTransport for TorCustomTransport {
     fn bind(&self) -> io::Result<Box<dyn CustomEndpoint>> {
         let (tx, rx) = tokio::sync::mpsc::channel(DEFAULT_RECV_CAPACITY);
         let service = TorPacketService::new(tx);
@@ -600,7 +600,7 @@ impl CustomTransport for TorUserTransport {
             }
         });
 
-        Ok(Box::new(TorUserEndpoint {
+        Ok(Box::new(TorCustomEndpoint {
             local_id: self.local_id,
             watchable,
             receiver: rx,
@@ -617,46 +617,46 @@ struct TorPreset {
 impl Preset for TorPreset {
     fn apply(self, builder: Builder) -> Builder {
         builder
-            .add_user_transport(self.factory)
+            .add_custom_transport(self.factory)
             .address_lookup(TorAddressLookup)
     }
 }
 
-/// Active Tor user endpoint created by [`TorUserTransport::bind()`].
+/// Active Tor user endpoint created by [`TorCustomTransport::bind()`].
 ///
 /// This is the actual endpoint that handles sending and receiving packets.
 /// Note: The control connection (and thus the hidden service) is kept alive by
-/// the `Arc<TorUserTransport>` that the user holds. The user must keep it alive
+/// the `Arc<TorCustomTransport>` that the user holds. The user must keep it alive
 /// for the lifetime of the endpoint.
-struct TorUserEndpoint {
+struct TorCustomEndpoint {
     local_id: EndpointId,
     watchable: Watchable<Vec<CustomAddr>>,
     receiver: tokio::sync::mpsc::Receiver<TorPacket>,
     sender: Arc<TorPacketSender>,
 }
 
-impl std::fmt::Debug for TorUserEndpoint {
+impl std::fmt::Debug for TorCustomEndpoint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TorUserEndpoint")
+        f.debug_struct("TorCustomEndpoint")
             .field("local_id", &self.local_id)
             .finish()
     }
 }
 
-struct TorUserSender {
+struct TorCustomSender {
     local_id: EndpointId,
     sender: Arc<TorPacketSender>,
 }
 
-impl std::fmt::Debug for TorUserSender {
+impl std::fmt::Debug for TorCustomSender {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TorUserSender")
+        f.debug_struct("TorCustomSender")
             .field("local_id", &self.local_id)
             .finish()
     }
 }
 
-impl CustomSender for TorUserSender {
+impl CustomSender for TorCustomSender {
     fn is_valid_send_addr(&self, addr: &CustomAddr) -> bool {
         addr.id() == TOR_USER_TRANSPORT_ID && addr.data().len() == 32
     }
@@ -692,13 +692,13 @@ impl CustomSender for TorUserSender {
     }
 }
 
-impl CustomEndpoint for TorUserEndpoint {
+impl CustomEndpoint for TorCustomEndpoint {
     fn watch_local_addrs(&self) -> n0_watcher::Direct<Vec<CustomAddr>> {
         self.watchable.watch()
     }
 
     fn create_sender(&self) -> Arc<dyn CustomSender> {
-        Arc::new(TorUserSender {
+        Arc::new(TorCustomSender {
             local_id: self.local_id,
             sender: self.sender.clone(),
         })
@@ -738,7 +738,7 @@ impl CustomEndpoint for TorUserEndpoint {
                         .segment_size
                         .map(|s| s as usize)
                         .unwrap_or(packet.data.len());
-                    source_addrs[filled] = Addr::User(tor_user_addr(packet.from));
+                    source_addrs[filled] = Addr::Custom(tor_user_addr(packet.from));
                     filled += 1;
                 }
             }

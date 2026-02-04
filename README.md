@@ -1,12 +1,12 @@
-# iroh-tor
+# iroh-tor-transport
 
 Tor hidden-service utilities and a custom iroh transport for routing packets over Tor streams.
 
 > **Experimental:** both iroh custom transports and this crate are experimental and may change.
 
-## What is iroh-tor?
+## What is iroh-tor-transport?
 
-`iroh-tor` provides a custom iroh user transport that routes packets over Tor hidden services.
+`iroh-tor-transport` provides a custom iroh custom transport that routes packets over Tor hidden services.
 Given only an iroh `EndpointId`, it derives the corresponding `.onion` address and connects
 through the Tor network.
 
@@ -27,7 +27,7 @@ and handles packet framing and stream reuse:
 
 ```rust
 use iroh::{Endpoint, SecretKey};
-use iroh_tor::TorCustomTransport;
+use iroh_tor_transport::TorCustomTransport;
 
 let secret_key = SecretKey::generate(&mut rand::rng());
 
@@ -45,7 +45,7 @@ let endpoint = Endpoint::builder()
 ```
 
 The `preset()` method configures the endpoint with:
-- The Tor user transport
+- The Tor custom transport
 - A discovery service that derives Tor addresses from endpoint IDs
 
 ## Example
@@ -65,7 +65,7 @@ The onion address is derived from the `EndpointId`, so you only need the endpoin
 ## Tests
 
 - `tests/echo.rs`: hidden-service echo tests (Tor required)
-- Internal tests cover packet framing, sender stream reuse, and user transport
+- Internal tests cover packet framing, sender stream reuse, and custom transport
 
 ## License
 

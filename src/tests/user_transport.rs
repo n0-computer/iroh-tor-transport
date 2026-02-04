@@ -15,7 +15,7 @@ use iroh::{
 use tokio::{net::TcpListener, sync::Mutex};
 use tracing::info;
 
-use crate::{TorStreamIo, TorUserTransport, tor_user_addr};
+use crate::{TorStreamIo, TorCustomTransport, tor_user_addr};
 
 const ALPN: &[u8] = b"iroh-tor/user-transport/0";
 
@@ -44,7 +44,7 @@ fn init_tracing() {
 }
 
 async fn setup_endpoint(sk: SecretKey, io: Arc<TorStreamIo>) -> Result<Endpoint> {
-    let transport = TorUserTransport::builder().io(io).build(sk.clone()).await?;
+    let transport = TorCustomTransport::builder().io(io).build(sk.clone()).await?;
     Ok(Endpoint::builder()
         .secret_key(sk)
         .clear_ip_transports()
@@ -122,7 +122,7 @@ async fn test_user_transport_roundtrip_local() -> Result<()> {
 
     let _server = Router::builder(ep2).accept(ALPN, Echo).spawn();
 
-    let addr2 = EndpointAddr::from_parts(id2, [TransportAddr::User(tor_user_addr(id2))]);
+    let addr2 = EndpointAddr::from_parts(id2, [TransportAddr::Custom(tor_user_addr(id2))]);
     info!("dialing remote endpoint (local)");
     let conn = ep1.connect(addr2, ALPN).await?;
     let (mut send, mut recv) = conn.open_bi().await?;

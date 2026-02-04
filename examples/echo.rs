@@ -1,6 +1,6 @@
 //! Example echo server/client using iroh over Tor hidden services.
 //!
-//! This example demonstrates how to use `iroh-tor` for bidirectional communication
+//! This example demonstrates how to use `iroh-tor-transport` for bidirectional communication
 //! over Tor. It requires a running Tor daemon with ControlPort enabled.
 
 use std::{env, str::FromStr, sync::Arc};
@@ -13,7 +13,7 @@ use iroh::{
     endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler, Router},
 };
-use iroh_tor::TorUserTransport;
+use iroh_tor_transport::TorCustomTransport;
 use tokio::time::{sleep, timeout};
 
 const ALPN: &[u8] = b"iroh-tor/user-transport/0";
@@ -116,7 +116,7 @@ async fn main() -> Result<()> {
     }
 
     // Build the transport - this creates the hidden service automatically
-    let transport = TorUserTransport::builder()
+    let transport = TorCustomTransport::builder()
         .build(secret.clone())
         .await
         .context("Failed to create Tor transport. Is Tor running with ControlPort 9051?")?;
