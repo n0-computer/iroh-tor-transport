@@ -3,7 +3,7 @@
 //! This crate provides utilities for creating Tor hidden services that can be used
 //! as a custom transport for iroh networking.
 
-use std::{collections::HashMap, future::Future, io, pin::Pin, sync::Arc};
+use std::{collections::HashMap, future::Future, io, num::NonZeroUsize, pin::Pin, sync::Arc};
 
 use bytes::Bytes;
 use iroh::{
@@ -702,6 +702,10 @@ impl CustomEndpoint for TorCustomEndpoint {
             local_id: self.local_id,
             sender: self.sender.clone(),
         })
+    }
+
+    fn max_transmit_segments(&self) -> NonZeroUsize {
+        NonZeroUsize::new(32).unwrap()
     }
 
     fn poll_recv(
