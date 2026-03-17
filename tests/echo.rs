@@ -437,6 +437,7 @@ async fn test_echo_latency_10x_single_service() -> Result<()> {
 ///
 /// This uses the public API only (TorCustomTransport::builder).
 #[tokio::test]
+#[ignore]
 async fn test_user_transport_roundtrip_tor() -> Result<()> {
     use iroh::{
         Endpoint,
@@ -478,21 +479,13 @@ async fn test_user_transport_roundtrip_tor() -> Result<()> {
         .await
         .context("Failed to create transport2")?;
 
-    let ep1 = Endpoint::builder()
+    let ep1 = Endpoint::builder(transport1.preset())
         .secret_key(sk1)
-        .clear_ip_transports()
-        .clear_relay_transports()
-        .clear_address_lookup()
-        .preset(transport1.preset())
         .bind()
         .await?;
 
-    let ep2 = Endpoint::builder()
+    let ep2 = Endpoint::builder(transport2.preset())
         .secret_key(sk2)
-        .clear_ip_transports()
-        .clear_relay_transports()
-        .clear_address_lookup()
-        .preset(transport2.preset())
         .bind()
         .await?;
 

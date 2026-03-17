@@ -509,9 +509,8 @@ impl TorCustomTransportBuilder {
 /// ```ignore
 /// let transport = TorCustomTransport::builder(secret_key).build().await;
 ///
-/// Endpoint::builder()
+/// Endpoint::builder(transport.preset())
 ///     .secret_key(secret_key)
-///     .preset(transport.preset())
 ///     .bind()
 ///     .await?
 /// ```
@@ -554,9 +553,8 @@ impl TorCustomTransport {
     /// ```ignore
     /// let transport = TorCustomTransport::builder(sk.clone()).build().await;
     ///
-    /// Endpoint::builder()
+    /// Endpoint::builder(transport.preset())
     ///     .secret_key(sk)
-    ///     .preset(transport.preset())
     ///     .bind()
     ///     .await?
     /// ```
@@ -617,6 +615,9 @@ struct TorPreset {
 impl Preset for TorPreset {
     fn apply(self, builder: Builder) -> Builder {
         builder
+            .clear_ip_transports()
+            .clear_relay_transports()
+            .clear_address_lookup()
             .add_custom_transport(self.factory)
             .address_lookup(TorAddressLookup)
     }

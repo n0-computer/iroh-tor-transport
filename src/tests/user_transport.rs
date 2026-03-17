@@ -48,12 +48,8 @@ async fn setup_endpoint(sk: SecretKey, io: Arc<TorStreamIo>) -> Result<Endpoint>
         .io(io)
         .build(sk.clone())
         .await?;
-    Ok(Endpoint::builder()
+    Ok(Endpoint::builder(transport.preset())
         .secret_key(sk)
-        .clear_ip_transports()
-        .clear_relay_transports()
-        .clear_address_lookup()
-        .preset(transport.preset())
         .bind()
         .await?)
 }

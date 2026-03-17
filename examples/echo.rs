@@ -123,12 +123,8 @@ async fn main() -> Result<()> {
 
     // Build the endpoint with the Tor transport
     let ep = Arc::new(
-        Endpoint::builder()
+        Endpoint::builder(transport.preset())
             .secret_key(secret)
-            .clear_ip_transports()
-            .clear_relay_transports()
-            .clear_address_lookup()
-            .preset(transport.preset())
             .bind()
             .await?,
     );
